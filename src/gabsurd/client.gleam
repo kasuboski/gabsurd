@@ -8,6 +8,7 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/otp/actor
+import gleam/string
 import parrot/dev
 import pog
 
@@ -16,9 +17,21 @@ pub type Db {
   Db(pid: process.Pid, connection: pog.Connection)
 }
 
+/// Errors returned by gabsurd operations.
+pub type GabsurdError {
+  /// The database query failed (connection issue, constraint violation, etc.)
+  QueryError(String)
+  /// A query returned an unexpected number of rows.
+  UnexpectedRowCount(String)
+  /// No row was found for a `:one` query.
+  NotFound
+  /// Failed to connect to the database.
+  ConnectionError(String)
+}
+
 /// Generate a unique integer for pool names.
 @external(erlang, "erlang", "unique_integer")
-fn unique_integer() -> Int
+pub fn unique_integer() -> Int
 
 /// Start a database connection from a DATABASE_URL string.
 /// Uses a unique pool name to avoid collisions when multiple
@@ -30,7 +43,7 @@ pub fn start(url: String) -> actor.StartResult(Db) {
   case config_result {
     Error(_) -> Error(actor.InitFailed("invalid DATABASE_URL"))
     Ok(config) -> {
-      let config = config |> pog.pool_size(1)
+      let config = config |> pog.pool_size(2)
       case pog.start(config) {
         Ok(started) ->
           Ok(actor.Started(
@@ -82,7 +95,7 @@ pub fn connection(db: Db) -> pog.Connection {
 pub fn query_one(
   db: Db,
   sql_params_decoder: #(String, List(dev.Param), decode.Decoder(a)),
-) -> Result(a, Nil) {
+) -> Result(a, GabsurdError) {
   let #(sql, params, decoder) = sql_params_decoder
   let result =
     sql
@@ -93,8 +106,12 @@ pub fn query_one(
 
   case result {
     Ok(pog.Returned(1, [row])) -> Ok(row)
-    Ok(pog.Returned(0, [])) -> Error(Nil)
-    _ -> Error(Nil)
+    // Absurd uses FOR UPDATE SKIP LOCKED so claim_task will never return
+    // duplicate rows for the same run, but we handle the unexpected case.
+    Ok(pog.Returned(n, _)) ->
+      Error(UnexpectedRowCount("expected 1 row, got " <> int.to_string(n)))
+    Error(error) ->
+      Error(query_error_to_gabsurd(error))
   }
 }
 
@@ -102,7 +119,7 @@ pub fn query_one(
 pub fn query_many(
   db: Db,
   sql_params_decoder: #(String, List(dev.Param), decode.Decoder(a)),
-) -> Result(List(a), Nil) {
+) -> Result(List(a), GabsurdError) {
   let #(sql, params, decoder) = sql_params_decoder
   let result =
     sql
@@ -113,7 +130,8 @@ pub fn query_many(
 
   case result {
     Ok(pog.Returned(_, rows)) -> Ok(rows)
-    _ -> Error(Nil)
+    Error(error) ->
+      Error(query_error_to_gabsurd(error))
   }
 }
 
@@ -122,7 +140,7 @@ pub fn query_many(
 pub fn exec(
   db: Db,
   sql_and_params: #(String, List(dev.Param)),
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GabsurdError) {
   let #(sql, params) = sql_and_params
   let result =
     sql
@@ -133,10 +151,39 @@ pub fn exec(
 
   case result {
     Ok(_) -> Ok(Nil)
-    _ -> Error(Nil)
+    Error(error) ->
+      Error(query_error_to_gabsurd(error))
   }
 }
 
 fn add_params(query: pog.Query(a), params: List(dev.Param)) -> pog.Query(a) {
   list.fold(params, query, fn(acc, p) { pog.parameter(acc, param.to_pog(p)) })
+}
+
+fn query_error_to_gabsurd(error: pog.QueryError) -> GabsurdError {
+  case error {
+    pog.ConstraintViolated(message, _, _) -> QueryError(message)
+    pog.PostgresqlError(code, _, message) ->
+      QueryError(code <> ": " <> message)
+    pog.UnexpectedArgumentCount(expected, got) ->
+      QueryError(
+        "unexpected argument count: expected "
+          <> int.to_string(expected)
+          <> " got "
+          <> int.to_string(got),
+      )
+    pog.UnexpectedArgumentType(expected, got) ->
+      QueryError("unexpected argument type: expected " <> expected <> " got " <> got)
+    pog.UnexpectedResultType(errors) ->
+      QueryError(
+        "decode error: "
+          <> string.join(
+            list.map(errors, fn(e) {
+              e.expected <> " got " <> e.found
+            }),
+            ", "),
+      )
+    pog.QueryTimeout -> QueryError("query timeout")
+    pog.ConnectionUnavailable -> ConnectionError("no connection available")
+  }
 }

@@ -1,6 +1,8 @@
 //// Cleanup and utility operations for the Absurd durable workflow system.
 
-import gabsurd/client.{type Db}
+import gleam/list
+import gleam/result
+import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/sql
 
 /// Result of a cleanup operation for a single queue.
@@ -12,7 +14,7 @@ pub type CleanupResult {
 pub fn cleanup_queue(
   db: Db,
   queue_name: String,
-) -> Result(List(CleanupResult), Nil) {
+) -> Result(List(CleanupResult), GabsurdError) {
   use rows <- result.try(client.query_many(
     db,
     sql.cleanup_all_queues(queue_name),
@@ -29,10 +31,7 @@ pub fn cleanup_queue(
 }
 
 /// Get the schema version from the database.
-pub fn get_schema_version(db: Db) -> Result(String, Nil) {
+pub fn get_schema_version(db: Db) -> Result(String, GabsurdError) {
   use row <- result.try(client.query_one(db, sql.get_schema_version()))
   Ok(row.get_schema_version)
 }
-
-import gleam/list
-import gleam/result

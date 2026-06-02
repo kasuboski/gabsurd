@@ -1,6 +1,6 @@
 # gabsurd
 
-A Gleam SDK for the [Absurd](https://github.comabsurd-sql/absurd) durable workflow system. Provides type-safe database access via Parrot (sqlc) code generation and OTP worker actors for task processing.
+A Gleam SDK for the [Absurd](https://github.com/absurd-sql/absurd) durable workflow system. Provides type-safe database access via Parrot (sqlc) code generation and OTP worker actors for task processing.
 
 ## Overview
 
@@ -44,6 +44,7 @@ let assert Ok(Nil) = queue.create(db, "emails")
 ### 4. Spawn Tasks
 
 ```gleam
+import gleam/json
 import gabsurd/task
 
 let assert Ok(info) =
@@ -51,14 +52,15 @@ let assert Ok(info) =
     db,
     "emails",
     "send_welcome",
-    "{\"to\": \"user@example.com\"}",
-    "{}",
+    json.object([#("to", json.string("user@example.com"))]),
+    task.new_options() |> task.with_max_attempts(3),
   )
 ```
 
 ### 5. Start a Worker
 
 ```gleam
+import gleam/json
 import gleam/option
 import gabsurd/worker
 
@@ -66,7 +68,7 @@ let email_handler = worker.Handler(
   task_name: "send_welcome",
   execute: fn(claim) {
     // Process the task...
-    Ok("{\"sent\": true}")
+    Ok(json.object([#("sent", json.bool(True))]))
   },
   on_error: option.None,
 )
@@ -83,16 +85,18 @@ let assert Ok(started) = worker.start(config)
 ### 6. Worker Pool with Supervisor
 
 ```gleam
+import gleam/list
 import gleam/otp/static_supervisor
 
 let pool = worker.pool_child_specs("email_workers", config, 4)
 
+// pool is a List(ChildSpecification) — add each one to the supervisor
 let assert Ok(sup) =
   static_supervisor.new(static_supervisor.OneForOne)
-  |> static_supervisor.add(pool_first(pool))
-  |> static_supervisor.add(pool_second(pool))
-  |> static_supervisor.add(pool_third(pool))
-  |> static_supervisor.add(pool_fourth(pool))
+  |> static_supervisor.add(list.first(pool) |> result.unwrap(assert_true))
+  |> static_supervisor.add(list.at(pool, 1) |> result.unwrap(assert_true))
+  |> static_supervisor.add(list.at(pool, 2) |> result.unwrap(assert_true))
+  |> static_supervisor.add(list.at(pool, 3) |> result.unwrap(assert_true))
   |> static_supervisor.start()
 ```
 
@@ -105,7 +109,6 @@ Database connection management.
 | Function | Description |
 |----------|-------------|
 | `start(url)` | Connect to PostgreSQL, returns `StartResult(Db)` |
-| `stop(db)` | Disconnect from PostgreSQL |
 
 ### `gabsurd/queue`
 
@@ -130,8 +133,14 @@ Task lifecycle operations.
 | `fail(db, queue, run_id, reason)` | Fail a run (uses queue retry policy) |
 | `fail_with_retry(db, queue, run_id, reason, retry_at)` | Fail a run and schedule retry |
 | `cancel(db, queue, task_id)` | Cancel a task |
-| `get_result(db, queue, task_id)` | Get task result/state |
+| `get_result(db, queue, task_id)` | Get task result as `TaskResult` record |
 | `retry(db, queue, task_id, options)` | Retry a failed task |
+| `new_options()` | Create empty spawn options |
+| `with_max_attempts(options, n)` | Set max attempts |
+| `with_retry_strategy(options, strategy)` | Set retry strategy |
+| `with_cancellation(options, policy)` | Set cancellation policy |
+| `with_headers(options, json)` | Set headers metadata |
+| `with_idempotency_key(options, key)` | Prevent duplicate spawning |
 
 ### `gabsurd/event`
 
@@ -149,7 +158,7 @@ Workflow checkpoint persistence.
 | Function | Description |
 |----------|-------------|
 | `set(db, queue, task_id, step, state, run_id)` | Save a checkpoint |
-| `get(db, queue, task_id, step)` | Retrieve a checkpoint |
+| `get(db, queue, task_id, step, include_pending)` | Retrieve a checkpoint |
 
 ### `gabsurd/worker`
 
@@ -168,6 +177,7 @@ OTP worker actor for task processing.
 | `with_batch_size(config, n)` | Set tasks claimed per poll (default: 1) |
 | `with_claim_timeout(config, secs)` | Set claim timeout (default: 30s) |
 | `with_worker_id(config, id)` | Set worker ID |
+| `with_max_backoff(config, ms)` | Set max error backoff (default: 60000ms) |
 | `start(config)` | Start a worker actor |
 | `stop(worker)` | Stop a worker gracefully |
 | `child_spec(name, config)` | Create supervisor child spec |
@@ -179,8 +189,8 @@ Maintenance and introspection.
 
 | Function | Description |
 |----------|-------------|
-| `cleanup_all(db, queue)` | Clean up completed/failed tasks |
-| `schema_version(db)` | Get the installed schema version |
+| `cleanup_queue(db, queue)` | Clean up completed/failed tasks |
+| `get_schema_version(db)` | Get the installed schema version |
 
 ## Architecture
 
@@ -204,12 +214,21 @@ Maintenance and introspection.
 
 Workers use the **Handler Record** pattern — each task type gets a `Handler` with:
 - `task_name`: Which tasks this handler processes
-- `execute`: The business logic — `fn(Claim) -> Result(String, String)`
+- `execute`: The business logic — `fn(Claim) -> Result(json.Json, json.Json)`
 - `on_error`: Optional hook for logging/metrics when execute fails
 
 The worker polls the queue using `process.send_after`, claims tasks, dispatches to matching handlers by `task_name`, and calls `complete` or `fail` based on the handler result.
 
-For pools, use `pool_child_specs` to generate N workers with unique IDs inside a `static_supervisor`.
+### Adaptive Polling
+When tasks are available, the worker re-polls immediately (zero delay). When the queue is empty, it waits `poll_interval` ms. This minimizes latency under load without wasting cycles when idle.
+
+### Claim Extension
+For long-running handlers, the worker automatically schedules claim lease extensions at `claim_timeout / 2` intervals. If the task completes before the extension fires, the extension fails harmlessly.
+
+### Error Backoff
+On transient claim errors, the worker backs off exponentially up to `max_backoff` (default 60s), resetting on success.
+
+For pools, use `pool_child_specs` to generate N workers with globally unique IDs inside a `static_supervisor`.
 
 ## Development
 

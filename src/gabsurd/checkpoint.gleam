@@ -1,10 +1,19 @@
 //// Checkpoint operations for the Absurd durable workflow system.
 //// Provides functions for setting and getting task checkpoint state.
+////
+//// Checkpoints serve a dual purpose in Absurd:
+////   1. They persist step results so completed steps are skipped on retry.
+////   2. They extend the worker's claim lease by `extend_claim_by` seconds.
+////
+//// The second behaviour is the primary lease extension mechanism — every
+//// checkpoint write keeps the worker's claim alive, so tasks with many
+//// short steps never time out.  For handlers that do a single long-running
+//// operation without checkpoints, see `gabsurd/task.extend_claim`.
 
 import gleam/json
 import gleam/result
 import gleam/time/timestamp.{type Timestamp}
-import gabsurd/client.{type Db}
+import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/sql
 
 /// A checkpoint record.
@@ -19,6 +28,10 @@ pub type Checkpoint {
 }
 
 /// Set a checkpoint for a task step.
+///
+/// `extend_claim_by` is the number of seconds to extend the worker's claim
+/// lease. Pass your worker's `claim_timeout` value here so that every
+/// checkpoint write keeps the lease alive. Pass `0` to skip extension.
 pub fn set(
   db: Db,
   queue_name: String,
@@ -26,7 +39,8 @@ pub fn set(
   step_name: String,
   state: json.Json,
   owner_run_id: BitArray,
-) -> Result(Nil, Nil) {
+  extend_claim_by: Int,
+) -> Result(Nil, GabsurdError) {
   client.exec(
     db,
     sql.set_task_checkpoint_state(
@@ -35,7 +49,7 @@ pub fn set(
       step_name,
       json.to_string(state),
       owner_run_id,
-      0,
+      extend_claim_by,
     ),
   )
 }
@@ -47,7 +61,7 @@ pub fn get(
   task_id: BitArray,
   step_name: String,
   include_pending: Bool,
-) -> Result(Checkpoint, Nil) {
+) -> Result(Checkpoint, GabsurdError) {
   use row <- result.try(
     client.query_one(
       db,

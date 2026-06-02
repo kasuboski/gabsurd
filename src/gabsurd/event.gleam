@@ -3,7 +3,7 @@
 
 import gleam/json
 import gleam/result
-import gabsurd/client.{type Db}
+import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/sql
 
 /// Result of an await_event call.
@@ -17,7 +17,7 @@ pub fn emit(
   queue_name: String,
   event_name: String,
   payload: json.Json,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GabsurdError) {
   client.exec(
     db,
     sql.emit_event(queue_name, event_name, json.to_string(payload)),
@@ -35,7 +35,7 @@ pub fn await(
   step_name: String,
   event_name: String,
   timeout: Int,
-) -> Result(AwaitResult, Nil) {
+) -> Result(AwaitResult, GabsurdError) {
   use row <- result.try(
     client.query_one(
       db,

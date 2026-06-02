@@ -31,7 +31,7 @@ pub fn set_checkpoint_test() {
   let assert Ok(claims) = task.claim(db, q, "cp-worker", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
-  // Set a checkpoint
+  // Set a checkpoint (extend_claim_by=0 for this test)
   checkpoint.set(
     db,
     q,
@@ -39,6 +39,7 @@ pub fn set_checkpoint_test() {
     "step1",
     json.object([#("progress", json.int(50))]),
     claim.run_id,
+    0,
   )
   |> should.be_ok
 
@@ -53,7 +54,7 @@ pub fn get_checkpoint_test() {
   let assert Ok(claims) = task.claim(db, q, "cp-get-worker", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
-  // Set a checkpoint
+  // Set a checkpoint (extend_claim_by=0 for this test)
   let assert Ok(Nil) =
     checkpoint.set(
       db,
@@ -62,6 +63,7 @@ pub fn get_checkpoint_test() {
       "step1",
       json.object([#("progress", json.int(75))]),
       claim.run_id,
+      0,
     )
 
   // Get it back

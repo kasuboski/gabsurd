@@ -89,7 +89,7 @@ pub fn worker_fails_task_on_handler_error_test() {
       q,
       "fail_task",
       json.object([]),
-      task.new_options() |> task.with_max_options(1),
+      task.new_options() |> task.with_max_attempts(1),
     )
 
   let tracker = process.new_subject()
@@ -170,7 +170,7 @@ pub fn worker_fails_unknown_task_test() {
       q,
       "unknown_task",
       json.object([]),
-      task.new_options() |> task.with_max_options(1),
+      task.new_options() |> task.with_max_attempts(1),
     )
 
   let tracker = process.new_subject()

@@ -48,7 +48,7 @@ pub fn spawn_with_options_test() {
       "retry_task",
       json.object([#("url", json.string("http://example.com"))]),
       task.new_options()
-      |> task.with_max_options(3),
+      |> task.with_max_attempts(3),
     )
   task_info.attempt |> should.equal(1)
   task_info.created |> should.be_true

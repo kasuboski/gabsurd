@@ -6,8 +6,9 @@ import gleam/json
 import gleam/list
 import gleam/option
 import gleam/result
+import gleam/time/duration
 import gleam/time/timestamp
-import gabsurd/client.{type Db}
+import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/sql
 
 // ============================================================================
@@ -33,6 +34,11 @@ pub type Claim {
     wake_event: String,
     event_payload: String,
   )
+}
+
+/// Result of a completed task.
+pub type TaskResult {
+  TaskResult(state: String, result: String, failure_reason: String)
 }
 
 /// Options for spawning or retrying a task.
@@ -94,7 +100,7 @@ pub fn new_options() -> SpawnOptions {
 }
 
 /// Set the maximum number of attempts for this task.
-pub fn with_max_options(options: SpawnOptions, max: Int) -> SpawnOptions {
+pub fn with_max_attempts(options: SpawnOptions, max: Int) -> SpawnOptions {
   SpawnOptions(..options, max_attempts: option.Some(max))
 }
 
@@ -207,7 +213,7 @@ fn encode_cancellation(c: Cancellation) -> json.Json {
 ///   "emails",
 ///   "send_welcome",
 ///   json.object([#("to", json.string("user@example.com"))]),
-///   task.new_options() |> task.with_max_options(3),
+///   task.new_options() |> task.with_max_attempts(3),
 /// )
 /// ```
 pub fn spawn(
@@ -216,7 +222,7 @@ pub fn spawn(
   task_name: String,
   params: json.Json,
   options: SpawnOptions,
-) -> Result(SpawnInfo, Nil) {
+) -> Result(SpawnInfo, GabsurdError) {
   let params_str = json.to_string(params)
   let options_str = encode_options(options)
   use row <- result.try(
@@ -240,7 +246,7 @@ pub fn claim(
   worker_id: String,
   claim_timeout: Int,
   qty: Int,
-) -> Result(List(Claim), Nil) {
+) -> Result(List(Claim), GabsurdError) {
   use rows <- result.try(
     client.query_many(
       db,
@@ -271,7 +277,7 @@ pub fn complete(
   queue_name: String,
   run_id: BitArray,
   state: json.Json,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GabsurdError) {
   client.exec(
     db,
     sql.complete_run(queue_name, run_id, json.to_string(state)),
@@ -285,7 +291,7 @@ pub fn fail(
   queue_name: String,
   run_id: BitArray,
   reason: json.Json,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GabsurdError) {
   client.exec(
     db,
     sql.fail_run(queue_name, run_id, json.to_string(reason)),
@@ -299,7 +305,7 @@ pub fn fail_with_retry(
   run_id: BitArray,
   reason: json.Json,
   retry_at: timestamp.Timestamp,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GabsurdError) {
   client.exec(
     db,
     sql.fail_run_with_retry(
@@ -311,12 +317,44 @@ pub fn fail_with_retry(
   )
 }
 
+/// Extend a worker's claim lease on a run by `extend_by` seconds.
+///
+/// This is the manual heartbeat mechanism. The primary lease extension
+/// mechanism is `checkpoint.set` which calls `set_task_checkpoint_state`
+/// with `extend_claim_by` — every checkpoint write extends the lease.
+///
+/// Use this function when you have long-running work between checkpoints
+/// and need to keep the lease alive.
+pub fn extend_claim(
+  db: Db,
+  queue_name: String,
+  run_id: BitArray,
+  extend_by: Int,
+) -> Result(Nil, GabsurdError) {
+  client.exec(db, sql.extend_claim(queue_name, run_id, extend_by))
+}
+
+/// Schedule a run to become available again at a future time.
+/// Used for deferring unknown tasks during rolling deployments.
+///
+/// `defer_seconds` is how many seconds from now to reschedule.
+pub fn schedule_run(
+  db: Db,
+  queue_name: String,
+  run_id: BitArray,
+  defer_seconds: Int,
+) -> Result(Nil, GabsurdError) {
+  let now = timestamp.system_time()
+  let wake_at = timestamp.add(now, duration.seconds(defer_seconds))
+  client.exec(db, sql.schedule_run(queue_name, run_id, wake_at))
+}
+
 /// Cancel a task by its task_id.
 pub fn cancel(
   db: Db,
   queue_name: String,
   task_id: BitArray,
-) -> Result(Nil, Nil) {
+) -> Result(Nil, GabsurdError) {
   client.exec(db, sql.cancel_task(queue_name, task_id))
 }
 
@@ -325,14 +363,18 @@ pub fn get_result(
   db: Db,
   queue_name: String,
   task_id: BitArray,
-) -> Result(#(String, String, String), Nil) {
+) -> Result(TaskResult, GabsurdError) {
   use row <- result.try(
     client.query_one(
       db,
       sql.get_task_result(queue_name, task_id),
     ),
   )
-  Ok(#(row.state, row.result, row.failure_reason))
+  Ok(TaskResult(
+    state: row.state,
+    result: row.result,
+    failure_reason: row.failure_reason,
+  ))
 }
 
 /// Retry a task with typed options.
@@ -341,7 +383,7 @@ pub fn retry(
   queue_name: String,
   task_id: BitArray,
   options: SpawnOptions,
-) -> Result(SpawnInfo, Nil) {
+) -> Result(SpawnInfo, GabsurdError) {
   let options_str = encode_options(options)
   use row <- result.try(
     client.query_one(
