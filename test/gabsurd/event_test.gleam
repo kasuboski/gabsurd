@@ -5,6 +5,7 @@ import gabsurd/event
 import gabsurd/queue
 import gabsurd/task
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleeunit/should
 
@@ -26,7 +27,7 @@ pub fn emit_event_test() {
   let #(db, q) = setup("test_emit_event")
 
   // Emit should succeed even with no listeners
-  event.emit(db, q, "test_event", "{\"key\": \"value\"}")
+  event.emit(db, q, "test_event", json.object([#("key", json.string("value"))]))
   |> should.be_ok
 
   teardown(db, q)
@@ -36,7 +37,7 @@ pub fn emit_event_null_payload_test() {
   let #(db, q) = setup("test_emit_null")
 
   // Emit with JSON null payload
-  event.emit(db, q, "null_event", "null")
+  event.emit(db, q, "null_event", json.null())
   |> should.be_ok
 
   teardown(db, q)
@@ -47,7 +48,8 @@ pub fn await_event_no_event_test() {
   let #(db, q) = setup("test_await_noevent")
 
   // Spawn + claim to get task/run IDs
-  let assert Ok(spawned) = task.spawn(db, q, "awaiting_task", "{}", "{}")
+  let assert Ok(spawned) =
+    task.spawn(db, q, "awaiting_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "await-worker", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
@@ -63,12 +65,14 @@ pub fn await_event_no_event_test() {
 pub fn emit_then_await_test() {
   let #(db, q) = setup("test_emit_await")
 
-  let assert Ok(spawned) = task.spawn(db, q, "event_task", "{}", "{}")
+  let assert Ok(spawned) =
+    task.spawn(db, q, "event_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "event-worker", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
   // Emit the event first
-  let assert Ok(Nil) = event.emit(db, q, "expected_event", "{\"data\": 42}")
+  let assert Ok(Nil) =
+    event.emit(db, q, "expected_event", json.object([#("data", json.int(42))]))
 
   // Now await should find it immediately
   let assert Ok(result) =

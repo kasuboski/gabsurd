@@ -1,6 +1,9 @@
 //// Checkpoint operations for the Absurd durable workflow system.
 //// Provides functions for setting and getting task checkpoint state.
 
+import gleam/json
+import gleam/result
+import gleam/time/timestamp.{type Timestamp}
 import gabsurd/client.{type Db}
 import gabsurd/sql
 
@@ -21,7 +24,7 @@ pub fn set(
   queue_name: String,
   task_id: BitArray,
   step_name: String,
-  state: String,
+  state: json.Json,
   owner_run_id: BitArray,
 ) -> Result(Nil, Nil) {
   client.exec(
@@ -30,7 +33,7 @@ pub fn set(
       queue_name,
       task_id,
       step_name,
-      state,
+      json.to_string(state),
       owner_run_id,
       0,
     ),
@@ -45,15 +48,17 @@ pub fn get(
   step_name: String,
   include_pending: Bool,
 ) -> Result(Checkpoint, Nil) {
-  use row <- result.try(client.query_one(
-    db,
-    sql.get_task_checkpoint_state(
-      queue_name,
-      task_id,
-      step_name,
-      include_pending,
+  use row <- result.try(
+    client.query_one(
+      db,
+      sql.get_task_checkpoint_state(
+        queue_name,
+        task_id,
+        step_name,
+        include_pending,
+      ),
     ),
-  ))
+  )
   Ok(Checkpoint(
     checkpoint_name: row.checkpoint_name,
     state: row.state,
@@ -62,6 +67,3 @@ pub fn get(
     updated_at: row.updated_at,
   ))
 }
-
-import gleam/result
-import gleam/time/timestamp.{type Timestamp}

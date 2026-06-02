@@ -7,6 +7,7 @@ import gabsurd/task.{type Claim}
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option
 import gleam/otp/actor
@@ -38,10 +39,10 @@ pub type Handler {
     /// The task_name this handler responds to.
     task_name: String,
     /// Execute the task. Return `Ok(json)` to complete or `Error(json)` to fail.
-    execute: fn(Claim) -> Result(String, String),
+    execute: fn(Claim) -> Result(json.Json, json.Json),
     /// Optional hook called when execute returns Error.
-    /// Receives the claim and the error string. Use for logging/metrics.
-    on_error: option.Option(fn(Claim, String) -> Nil),
+    /// Receives the claim and the error json. Use for logging/metrics.
+    on_error: option.Option(fn(Claim, json.Json) -> Nil),
   )
 }
 
@@ -252,9 +253,10 @@ fn execute_task(state: WorkerState, claim: Claim) -> Nil {
     Error(_) -> {
       // No handler for this task — fail it
       let reason =
-        "{\"error\": \"no_handler\", \"task_name\": \""
-        <> claim.task_name
-        <> "\"}"
+        json.object([
+          #("error", json.string("no_handler")),
+          #("task_name", json.string(claim.task_name)),
+        ])
       let _ =
         task.fail(
           state.config.db,

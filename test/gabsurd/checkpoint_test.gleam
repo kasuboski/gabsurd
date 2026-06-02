@@ -5,6 +5,7 @@ import gabsurd/client
 import gabsurd/queue
 import gabsurd/task
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleeunit/should
 
@@ -25,7 +26,8 @@ fn teardown(db: client.Db, queue_name: String) {
 pub fn set_checkpoint_test() {
   let #(db, q) = setup("test_checkpoint_set")
 
-  let assert Ok(spawned) = task.spawn(db, q, "checkpoint_task", "{}", "{}")
+  let assert Ok(spawned) =
+    task.spawn(db, q, "checkpoint_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "cp-worker", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
@@ -35,7 +37,7 @@ pub fn set_checkpoint_test() {
     q,
     spawned.task_id,
     "step1",
-    "{\"progress\": 50}",
+    json.object([#("progress", json.int(50))]),
     claim.run_id,
   )
   |> should.be_ok
@@ -46,7 +48,8 @@ pub fn set_checkpoint_test() {
 pub fn get_checkpoint_test() {
   let #(db, q) = setup("test_checkpoint_get")
 
-  let assert Ok(spawned) = task.spawn(db, q, "cp_get_task", "{}", "{}")
+  let assert Ok(spawned) =
+    task.spawn(db, q, "cp_get_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "cp-get-worker", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
@@ -57,7 +60,7 @@ pub fn get_checkpoint_test() {
       q,
       spawned.task_id,
       "step1",
-      "{\"progress\": 75}",
+      json.object([#("progress", json.int(75))]),
       claim.run_id,
     )
 

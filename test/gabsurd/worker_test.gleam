@@ -5,6 +5,7 @@ import gabsurd/queue
 import gabsurd/task
 import gabsurd/worker
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleam/option
 import gleam/otp/static_supervisor
@@ -25,7 +26,7 @@ fn tracking_handler(
     task_name: task_name,
     execute: fn(_claim) {
       process.send(tracker, Nil)
-      Ok("{\"tracked\": true}")
+      Ok(json.object([#("tracked", json.bool(True))]))
     },
     on_error: option.None,
   )
@@ -52,7 +53,8 @@ pub fn worker_claims_and_completes_task_test() {
   let #(db, q) = setup("test_worker_claim")
 
   // Spawn a task
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
 
   // Start a worker with a tracker so we know when it processes
   let tracker = process.new_subject()
@@ -82,7 +84,13 @@ pub fn worker_fails_task_on_handler_error_test() {
 
   // Spawn with max_attempts=1 so fail_run doesn't create a retry
   let assert Ok(_) =
-    task.spawn(db, q, "fail_task", "{}", "{\"max_attempts\": 1}")
+    task.spawn(
+      db,
+      q,
+      "fail_task",
+      json.object([]),
+      task.new_options() |> task.with_max_options(1),
+    )
 
   let tracker = process.new_subject()
   // A handler for fail_task that tracks when called, then returns error
@@ -91,7 +99,7 @@ pub fn worker_fails_task_on_handler_error_test() {
       task_name: "fail_task",
       execute: fn(_claim) {
         process.send(tracker, Nil)
-        Error("{\"deliberate\": true}")
+        Error(json.object([#("deliberate", json.bool(True))]))
       },
       on_error: option.None,
     )
@@ -120,9 +128,12 @@ pub fn worker_processes_multiple_tasks_test() {
   let #(db, q) = setup("test_worker_multi")
 
   // Spawn 3 tasks
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
 
   let tracker = process.new_subject()
   let handler = tracking_handler("ok_task", tracker)
@@ -154,7 +165,13 @@ pub fn worker_fails_unknown_task_test() {
 
   // Spawn with max_attempts=1 so fail_run doesn't create a retry
   let assert Ok(_) =
-    task.spawn(db, q, "unknown_task", "{}", "{\"max_attempts\": 1}")
+    task.spawn(
+      db,
+      q,
+      "unknown_task",
+      json.object([]),
+      task.new_options() |> task.with_max_options(1),
+    )
 
   let tracker = process.new_subject()
   let handler = tracking_handler("ok_task", tracker)
@@ -182,11 +199,16 @@ pub fn worker_pool_processes_tasks_test() {
   let #(db, q) = setup("test_worker_pool")
 
   // Spawn 5 tasks
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
-  let assert Ok(_) = task.spawn(db, q, "ok_task", "{}", "{}")
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
+  let assert Ok(_) =
+    task.spawn(db, q, "ok_task", json.object([]), task.new_options())
 
   let tracker = process.new_subject()
   let handler = tracking_handler("ok_task", tracker)

@@ -5,6 +5,7 @@ import gabsurd/queue
 import gabsurd/task
 import gleam/bit_array
 import gleam/erlang/process
+import gleam/json
 import gleam/list
 import gleeunit/should
 
@@ -27,7 +28,8 @@ fn teardown(db: client.Db, queue_name: String) {
 pub fn spawn_task_test() {
   let #(db, q) = setup("test_spawn")
 
-  let assert Ok(task_info) = task.spawn(db, q, "my_task", "{}", "{}")
+  let assert Ok(task_info) =
+    task.spawn(db, q, "my_task", json.object([]), task.new_options())
   task_info.attempt |> should.equal(1)
   task_info.created |> should.be_true
   should.be_true(bit_array.byte_size(task_info.task_id) == 16)
@@ -36,10 +38,29 @@ pub fn spawn_task_test() {
   teardown(db, q)
 }
 
+pub fn spawn_with_options_test() {
+  let #(db, q) = setup("test_spawn_opts")
+
+  let assert Ok(task_info) =
+    task.spawn(
+      db,
+      q,
+      "retry_task",
+      json.object([#("url", json.string("http://example.com"))]),
+      task.new_options()
+      |> task.with_max_options(3),
+    )
+  task_info.attempt |> should.equal(1)
+  task_info.created |> should.be_true
+
+  teardown(db, q)
+}
+
 pub fn claim_task_test() {
   let #(db, q) = setup("test_claim")
 
-  let assert Ok(task_info) = task.spawn(db, q, "claimable_task", "{}", "{}")
+  let assert Ok(task_info) =
+    task.spawn(db, q, "claimable_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "worker-1", 30, 1)
   list.length(claims) |> should.equal(1)
 
@@ -54,11 +75,17 @@ pub fn claim_task_test() {
 pub fn complete_run_test() {
   let #(db, q) = setup("test_complete")
 
-  let assert Ok(_) = task.spawn(db, q, "completable_task", "{}", "{}")
+  let assert Ok(_) =
+    task.spawn(db, q, "completable_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "worker-2", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
-  task.complete(db, q, claim.run_id, "{\"status\": \"done\"}")
+  task.complete(
+    db,
+    q,
+    claim.run_id,
+    json.object([#("status", json.string("done"))]),
+  )
   |> should.be_ok
 
   teardown(db, q)
@@ -67,11 +94,17 @@ pub fn complete_run_test() {
 pub fn fail_run_test() {
   let #(db, q) = setup("test_fail")
 
-  let assert Ok(_) = task.spawn(db, q, "failing_task", "{}", "{}")
+  let assert Ok(_) =
+    task.spawn(db, q, "failing_task", json.object([]), task.new_options())
   let assert Ok(claims) = task.claim(db, q, "worker-3", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
-  task.fail(db, q, claim.run_id, "{\"error\": \"boom\"}")
+  task.fail(
+    db,
+    q,
+    claim.run_id,
+    json.object([#("error", json.string("boom"))]),
+  )
   |> should.be_ok
 
   teardown(db, q)
@@ -80,7 +113,8 @@ pub fn fail_run_test() {
 pub fn cancel_task_test() {
   let #(db, q) = setup("test_cancel")
 
-  let assert Ok(task_info) = task.spawn(db, q, "cancellable_task", "{}", "{}")
+  let assert Ok(task_info) =
+    task.spawn(db, q, "cancellable_task", json.object([]), task.new_options())
   task.cancel(db, q, task_info.task_id) |> should.be_ok
 
   teardown(db, q)
@@ -92,7 +126,13 @@ pub fn full_lifecycle_test() {
 
   // 1. Spawn
   let assert Ok(spawned) =
-    task.spawn(db, q, "lifecycle_task", "{\"input\": 42}", "{}")
+    task.spawn(
+      db,
+      q,
+      "lifecycle_task",
+      json.object([#("input", json.int(42))]),
+      task.new_options(),
+    )
   spawned.attempt |> should.equal(1)
 
   // 2. Claim
@@ -102,7 +142,13 @@ pub fn full_lifecycle_test() {
   claim.task_name |> should.equal("lifecycle_task")
 
   // 3. Complete
-  let assert Ok(Nil) = task.complete(db, q, claim.run_id, "{\"output\": 99}")
+  let assert Ok(Nil) =
+    task.complete(
+      db,
+      q,
+      claim.run_id,
+      json.object([#("output", json.int(99))]),
+    )
 
   // 4. Verify no more tasks to claim
   let assert Ok(claims2) = task.claim(db, q, "lifecycle-worker", 30, 1)
