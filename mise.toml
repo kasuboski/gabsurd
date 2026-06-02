@@ -1,0 +1,52 @@
+[tools]
+gleam = "latest"
+erlang = "latest"
+rebar = "latest"
+
+[env]
+DATABASE_URL = "postgresql://gabsurd:gabsurd@127.0.0.1:5432/gabsurd"
+
+[tasks.db]
+description = "Start the PostgreSQL container"
+run = "bash bin/postgres.sh"
+
+[tasks.db-stop]
+description = "Stop the PostgreSQL container"
+run = "bash bin/stop_postgres.sh"
+
+[tasks.db-reset]
+description = "Reset the database (drop, recreate, apply schema)"
+run = "bash bin/reset_db.sh"
+
+[tasks.build]
+description = "Compile the project"
+run = "gleam build"
+
+[tasks.format]
+description = "Format all Gleam source files"
+run = "gleam format"
+
+[tasks.check]
+description = "Check formatting and build"
+depends = ["check-format", "build"]
+
+[tasks.check-format]
+description = "Check that all files are formatted"
+run = "gleam format --check src test"
+
+[tasks.test]
+description = "Run all tests (resets DB first)"
+depends = ["db-reset"]
+run = "gleam test"
+
+[tasks.codegen]
+description = "Regenerate SQL module via Parrot (needs pg_dump on PATH)"
+run = "PATH=\"$(nix eval --raw 'nixpkgs#postgresql_17.out')/bin:$PATH\" gleam run -m parrot"
+
+[tasks.pre-commit]
+description = "Run before every commit: format check, build, and tests"
+depends = ["check", "test"]
+
+[tasks.clean]
+description = "Clean build artifacts"
+run = "gleam clean"
