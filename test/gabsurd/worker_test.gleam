@@ -3,7 +3,7 @@
 import gabsurd/client
 import gabsurd/queue
 import gabsurd/task
-import gabsurd/worker
+import gabsurd/worker.{Complete, Fail}
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -26,7 +26,7 @@ fn tracking_handler(
     task_name: task_name,
     execute: fn(_claim) {
       process.send(tracker, Nil)
-      Ok(json.object([#("tracked", json.bool(True))]))
+      Complete(json.object([#("tracked", json.bool(True))]))
     },
     on_error: option.None,
   )
@@ -99,7 +99,7 @@ pub fn worker_fails_task_on_handler_error_test() {
       task_name: "fail_task",
       execute: fn(_claim) {
         process.send(tracker, Nil)
-        Error(json.object([#("deliberate", json.bool(True))]))
+        Fail(json.object([#("deliberate", json.bool(True))]))
       },
       on_error: option.None,
     )
@@ -250,4 +250,47 @@ fn pool_first(pool: List(a)) -> a {
 fn pool_second(pool: List(a)) -> a {
   let assert [_, x, ..] = pool
   x
+}
+
+/// Worker should not call complete or fail when handler returns Suspend.
+pub fn worker_suspends_task_test() {
+  let #(db, q) = setup("test_worker_suspend")
+
+  // Spawn a task
+  let assert Ok(info) =
+    task.spawn(db, q, "suspend_task", json.object([]), task.new_options())
+
+  // Handler returns Suspend — simulating an event.await call
+  let handler =
+    worker.Handler(
+      task_name: "suspend_task",
+      execute: fn(_claim) { worker.Suspend },
+      on_error: option.None,
+    )
+
+  let config =
+    worker.new(db, q, [handler])
+    |> worker.with_poll_interval(100)
+
+  let assert Ok(started) = worker.start(config)
+  let w = started.data
+
+  // Wait for the worker to process the task
+  process.sleep(500)
+
+  // The task should NOT be completed or failed — it should still be claimable
+  // because Suspend skips the complete/fail call and the run goes back to
+  // pending after being released.
+  // Actually, since event.await was not actually called, the run is still
+  // in "running" state (claimed by the worker). The key thing is the worker
+  // did NOT call complete or fail on it.
+  //
+  // We can verify this by checking that get_result returns a TaskResult
+  // with state="running" (not "completed" or "failed"), proving the
+  // worker did NOT call complete or fail on it.
+  let assert Ok(result) = task.get_result(db, q, info.task_id)
+  result.state |> should.equal("running")
+
+  worker.stop(w)
+  teardown(db, q)
 }

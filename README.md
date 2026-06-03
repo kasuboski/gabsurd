@@ -68,7 +68,7 @@ let email_handler = worker.Handler(
   task_name: "send_welcome",
   execute: fn(claim) {
     // Process the task...
-    Ok(json.object([#("sent", json.bool(True))]))
+    Complete(json.object([#("sent", json.bool(True))]))
   },
   on_error: option.None,
 )
@@ -170,6 +170,7 @@ OTP worker actor for task processing.
 | Type | Description |
 |------|-------------|
 | `Handler(task_name, execute, on_error)` | Handler for a specific task type |
+| `HandlerResult` | Return type: `Complete(json)`, `Fail(json)`, or `Suspend` |
 | `Config` | Worker configuration |
 | `Worker` | Running worker handle |
 
@@ -217,10 +218,15 @@ Maintenance and introspection.
 
 Workers use the **Handler Record** pattern — each task type gets a `Handler` with:
 - `task_name`: Which tasks this handler processes
-- `execute`: The business logic — `fn(Claim) -> Result(json.Json, json.Json)`
-- `on_error`: Optional hook for logging/metrics when execute fails
+- `execute`: The business logic — `fn(Claim) -> HandlerResult`
+- `on_error`: Optional hook for logging/metrics when execute returns `Fail`
 
-The worker polls the queue using `process.send_after`, claims tasks, dispatches to matching handlers by `task_name`, and calls `complete` or `fail` based on the handler result.
+The `HandlerResult` type has three variants:
+- `Complete(json)` — mark the task as successfully done
+- `Fail(json)` — mark the task as failed (triggers retry if attempts remain)
+- `Suspend` — the task is waiting for an event; skip complete/fail
+
+The worker polls the queue using `process.send_after`, claims tasks, dispatches to matching handlers by `task_name`, and handles the result accordingly.
 
 ### Claim Extension via Checkpoints
 
@@ -246,6 +252,185 @@ On transient claim errors, the worker backs off exponentially up to `max_backoff
 
 For pools, use `pool_child_specs` to generate N workers with globally unique IDs
 inside a `static_supervisor`.
+
+## Examples
+
+### Multi-Step Workflow with Checkpoints
+
+Durable workflows survive crashes. Each step writes a checkpoint — on retry,
+completed steps are skipped. Checkpoints also extend the worker's claim lease
+so the task never times out mid-workflow.
+
+```gleam
+import gleam/json
+import gleam/option
+import gabsurd/checkpoint
+import gabsurd/worker.{Complete, Fail, Handler}
+
+let process_order = Handler(
+  task_name: "process_order",
+  execute: fn(claim) {
+    let claim_timeout = 30
+
+    // Step 1: Charge credit card (skip if already done)
+    case checkpoint.get(db, "orders", claim.task_id, "charge", False) {
+      Error(_) -> {
+        let assert Ok(_) = charge_card(params.card_token, params.amount)
+        let assert Ok(Nil) = checkpoint.set(
+          db, "orders", claim.task_id, "charge",
+          json.object([#("amount", json.int(params.amount))]),
+          claim.run_id, claim_timeout,
+        )
+      }
+      Ok(_) -> Nil
+    }
+
+    // Step 2: Reserve inventory (skip if already done)
+    case checkpoint.get(db, "orders", claim.task_id, "reserve", False) {
+      Error(_) -> {
+        let assert Ok(_) = reserve_items(params.items)
+        let assert Ok(Nil) = checkpoint.set(
+          db, "orders", claim.task_id, "reserve",
+          json.object([#("reserved", json.bool(True))]),
+          claim.run_id, claim_timeout,
+        )
+      }
+      Ok(_) -> Nil
+    }
+
+    // Step 3: Send confirmation
+    send_email(params.email, "Order confirmed!")
+    Complete(json.object([#("status", json.string("completed"))]))
+  },
+  on_error: option.Some(fn(claim, err) {
+    io.println_error("Order failed: " <> json.to_string(err))
+  }),
+)
+```
+
+### Event-Driven Workflow
+
+Tasks can suspend waiting for an external event (e.g., a webhook callback).
+Call `event.await` inside the handler and return `Suspend` when the task
+needs to sleep. When `emit_event` fires, the task wakes up and the handler
+runs again.
+
+```gleam
+import gleam/json
+import gleam/option
+import gabsurd/checkpoint
+import gabsurd/event
+import gabsurd/worker.{Complete, Fail, Handler, Suspend}
+
+let generate_report = Handler(
+  task_name: "generate_report",
+  execute: fn(claim) {
+    let claim_timeout = 30
+
+    // Check if we already started the remote job
+    case checkpoint.get(db, "reports", claim.task_id, "job_started", False) {
+      Error(_) -> {
+        // First attempt — kick off the remote job
+        let job_id = start_remote_report(claim.params)
+        let assert Ok(Nil) = checkpoint.set(
+          db, "reports", claim.task_id, "job_started",
+          json.object([#("job_id", json.string(job_id))]),
+          claim.run_id, claim_timeout,
+        )
+
+        // Wait for the remote service to POST back
+        let assert Ok(a) = event.await(
+          db, "reports", claim.task_id, claim.run_id,
+          "wait_for_callback",
+          "report_complete_" <> job_id,
+          3600,  // 1 hour timeout
+        )
+        case a.should_suspend {
+          True -> Suspend  // task sleeps until emit_event fires
+          False -> Complete(json.string(a.payload))
+        }
+      }
+      Ok(_) -> {
+        // Resumed — the event arrived
+        case claim.event_payload {
+          "" -> Fail(json.string("report timed out"))
+          payload -> Complete(json.string(payload))
+        }
+      }
+    }
+  },
+  on_error: option.None,
+)
+```
+
+Then in your webhook HTTP handler (separate process):
+
+```gleam
+import gabsurd/event
+
+// When the remote service calls back:
+let assert Ok(Nil) = event.emit(
+  db, "reports",
+  "report_complete_" <> job_id,  // must match event_name from await
+  json.object([#("url", json.string(download_url))]),
+)
+```
+
+### Idempotent Task Spawning
+
+Use `with_idempotency_key` to prevent duplicate tasks — critical for
+payment processing where double-spawning means double-charging.
+
+```gleam
+let assert Ok(info) =
+  task.spawn(
+    db, "payments", "charge_card",
+    json.object([#("amount", json.int(9999))]),
+    task.new_options()
+    |> task.with_idempotency_key("order-" <> order_id),
+  )
+// If the caller crashes and retries, the same task is returned
+// (info.created will be False on subsequent calls)
+```
+
+### Retry Strategies
+
+```gleam
+// Exponential backoff for flaky APIs
+let assert Ok(_) =
+  task.spawn(
+    db, "integrations", "sync_crm",
+    json.object([#("contact_id", json.string(id))]),
+    task.new_options()
+    |> task.with_max_attempts(5)
+    |> task.with_retry_strategy(task.ExponentialRetry(
+      base_seconds: 10, factor: 2.0, max_seconds: 300.0,
+    )),
+  )
+// Retries at ~10s, 20s, 40s, 80s, capped at 300s
+```
+
+### Long-Running Tasks with Manual Heartbeats
+
+For tasks that do a single long operation without checkpoints:
+
+```gleam
+import gabsurd/task
+import gabsurd/worker.{Complete, Handler}
+
+let handler = Handler(
+  task_name: "batch_import",
+  execute: fn(claim) {
+    list.each(records, fn(batch) {
+      process_batch(batch)
+      // Keep the lease alive after each batch
+      task.extend_claim(db, "imports", claim.run_id, 30)
+    })
+    Complete(json.object([#("imported", json.int(list.length(records)))]))
+  },
+  on_error: option.None,
+)
+```
 
 ## Development
 

@@ -40,6 +40,20 @@ import gleam/string
 // Public Types
 // ============================================================================
 
+/// The result of a handler's `execute` function.
+///
+/// Return `Complete(result)` to mark the task as successfully done.
+/// Return `Fail(reason)` to mark the task as failed.
+/// Return `Suspend` when the task is waiting for an event — the worker
+/// will skip the complete/fail call so the run stays in `sleeping` state
+/// until `emit_event` wakes it up.
+///
+pub type HandlerResult {
+  Complete(json.Json)
+  Fail(json.Json)
+  Suspend
+}
+
 /// A handler for a specific task type.
 ///
 /// Define one of these for each kind of task your workers should process.
@@ -52,7 +66,7 @@ import gleam/string
 ///   task_name: "send_email",
 ///   execute: fn(claim) {
 ///     // ... send email ...
-///     Ok(json.object([#("sent", json.bool(True))]))
+///     Complete(json.object([#("sent", json.bool(True))]))
 ///   },
 ///   on_error: option.None,
 /// )
@@ -61,9 +75,9 @@ pub type Handler {
   Handler(
     /// The task_name this handler responds to.
     task_name: String,
-    /// Execute the task. Return `Ok(json)` to complete or `Error(json)` to fail.
-    execute: fn(Claim) -> Result(json.Json, json.Json),
-    /// Optional hook called when execute returns Error.
+    /// Execute the task. Return `Complete`, `Fail`, or `Suspend`.
+    execute: fn(Claim) -> HandlerResult,
+    /// Optional hook called when execute returns Fail.
     /// Receives the claim and the error json. Use for logging/metrics.
     on_error: option.Option(fn(Claim, json.Json) -> Nil),
   )
@@ -277,7 +291,7 @@ fn execute_task(state: WorkerState, claim: Claim) -> Nil {
   case dict.get(state.handler_map, claim.task_name) {
     Ok(handler) -> {
       case handler.execute(claim) {
-        Ok(result_json) -> {
+        Complete(result_json) -> {
           case
             task.complete(
               state.config.db,
@@ -290,7 +304,7 @@ fn execute_task(state: WorkerState, claim: Claim) -> Nil {
             Error(error) -> handle_completion_error("complete", error)
           }
         }
-        Error(error_json) -> {
+        Fail(error_json) -> {
           // Call on_error hook if present
           case handler.on_error {
             option.Some(hook) -> hook(claim, error_json)
@@ -307,6 +321,12 @@ fn execute_task(state: WorkerState, claim: Claim) -> Nil {
             Ok(_) -> Nil
             Error(error) -> handle_completion_error("fail", error)
           }
+        }
+        Suspend -> {
+          // The handler has called event.await, which put the run into
+          // sleeping state. Do NOT call complete or fail — the task will
+          // wake up when emit_event fires.
+          Nil
         }
       }
     }
