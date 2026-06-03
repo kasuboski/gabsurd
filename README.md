@@ -245,8 +245,8 @@ Workers use the **Handler Record** pattern — each task type gets a `Handler` w
 - `on_error`: Optional hook for logging/metrics when execute returns `Fail`
 
 The handler receives a `Context` that encapsulates the database connection, queue,
-claim details, and claim timeout. It provides `ctx.step()` for idempotent steps
-and `ctx.await_event()` for event-driven workflows.
+claim details, and claim timeout. It provides `context.step(ctx, ...)` for
+idempotent steps and `context.await_event(ctx, ...)` for event-driven workflows.
 
 The `HandlerResult` type has three variants:
 - `Complete(json)` — mark the task as successfully done
@@ -258,7 +258,7 @@ a `Context`, dispatches to matching handlers by `task_name`, and handles the res
 
 ### Idempotent Steps
 
-`ctx.step(name, decoder, run)` is the primary building block for durable workflows:
+`context.step(ctx, name, decoder, run)` is the primary building block for durable workflows:
 - On first execution: calls `run()`, persists the result as a checkpoint, extends the lease
 - On retry: finds the checkpoint, decodes the stored value, skips execution
 - `decoder` is a `gleam/dynamic/decode.Decoder(a)` — Gleam's `json.Json` is write-only,
@@ -283,7 +283,7 @@ inside a `static_supervisor`.
 
 ### Multi-Step Workflow with Checkpoints
 
-Durable workflows survive crashes. Each step uses `ctx.step` — on retry,
+Durable workflows survive crashes. Each step uses `context.step` — on retry,
 completed steps are skipped. Steps also extend the worker's claim lease
 so the task never times out mid-workflow.
 
@@ -292,6 +292,7 @@ import gleam/dynamic/decode
 import gleam/json
 import gleam/option
 import gleam/result
+import gabsurd/client
 import gabsurd/context
 import gabsurd/worker.{Complete, Fail, Handler}
 
@@ -300,28 +301,30 @@ let process_order = Handler(
   execute: fn(ctx) {
     case order_workflow(ctx) {
       Ok(Nil) -> Complete(json.object([#("status", json.string("completed"))]))
-      Error(e) -> Fail(json.string(context_error(e)))
+      Error(e) -> Fail(json.string(error_to_string(e)))
     }
   },
   on_error: option.None,
 )
 
-fn order_workflow(ctx) -> Result(Nil, context.GabsurdError) {
+fn order_workflow(ctx) -> Result(Nil, client.GabsurdError) {
+  let params = decode_params(context.params(ctx))
+
   // Step 1: Charge credit card (skip if checkpoint exists)
-  use _ <- result.try(ctx.step("charge", decode.success(Nil), fn() {
-    charge_card(decode_params(ctx.params(ctx)))
+  use _ <- result.try(context.step(ctx, "charge", decode.success(Nil), fn() {
+    charge_card(params)
     json.null()
   }))
 
   // Step 2: Reserve inventory (skip if done)
-  use _ <- result.try(ctx.step("reserve", decode.success(Nil), fn() {
-    reserve_inventory(decode_params(ctx.params(ctx)))
+  use _ <- result.try(context.step(ctx, "reserve", decode.success(Nil), fn() {
+    reserve_inventory(params)
     json.null()
   }))
 
   // Step 3: Send confirmation
-  use _ <- result.try(ctx.step("notify", decode.success(Nil), fn() {
-    send_confirmation(decode_params(ctx.params(ctx)))
+  use _ <- result.try(context.step(ctx, "notify", decode.success(Nil), fn() {
+    send_confirmation(params)
     json.null()
   }))
 
@@ -332,35 +335,44 @@ fn order_workflow(ctx) -> Result(Nil, context.GabsurdError) {
 ### Steps That Pass Data Forward
 
 ```gleam
-fn order_workflow(ctx) -> Result(Nil, context.GabsurdError) {
+fn order_workflow(ctx) -> Result(Nil, client.GabsurdError) {
   // Charge and get back the charge_id
   use charge_id <- result.try(
-    ctx.step("charge", decode.field("charge_id", decode.string), fn() {
-      let result = charge_card(decode_params(ctx.params(ctx)))
+    context.step(ctx, "charge", charge_id_decoder(), fn() {
+      let result = charge_card(decode_params(context.params(ctx)))
       json.object([#("charge_id", json.string(result.id))])
-    },
+    }),
   )
 
   // Use charge_id in the next step
-  use _ <- result.try(ctx.step("capture", decode.success(Nil), fn() {
+  use _ <- result.try(context.step(ctx, "capture", decode.success(Nil), fn() {
     capture_charge(charge_id)
     json.null()
   }))
 
   Ok(Nil)
 }
+
+// Decoder using Gleam's continuation-based decode.field API:
+fn charge_id_decoder() -> decode.Decoder(String) {
+  use charge_id <- decode.field("charge_id", decode.string)
+  decode.success(charge_id)
+}
 ```
 
 ### Event-Driven Workflow
 
 Tasks can suspend waiting for an external event (e.g., a webhook callback).
-Call `ctx.await_event` and return `Suspend` when the task needs to sleep.
-When `emit_event` fires, the task wakes up and the handler runs again.
+Call `context.await_event` and return `Suspend` when the task needs to sleep.
+When `event.emit` fires, the task wakes up and the handler runs again.
 
 ```gleam
 import gleam/dynamic/decode
 import gleam/json
 import gleam/option
+import gleam/result
+import gabsurd/client
+import gabsurd/context
 import gabsurd/context.{Received, Suspended}
 import gabsurd/worker.{Complete, Fail, Handler, Suspend}
 
@@ -369,14 +381,14 @@ let generate_report = Handler(
   execute: fn(ctx) {
     // Start the remote job (idempotent — skips if already done)
     use job_id <- result.try(
-      ctx.step("start", decode.field("job_id", decode.string), fn() {
-        let id = start_remote_job(ctx.params(ctx))
+      context.step(ctx, "start", job_id_decoder(), fn() {
+        let id = start_remote_job(context.params(ctx))
         json.object([#("job_id", json.string(id))])
       }),
     )
 
     // Wait for the remote service to POST back
-    case ctx.await_event("report_complete_" <> job_id, 3600) {
+    case context.await_event(ctx, "report_complete_" <> job_id, 3600) {
       Ok(Received(payload)) -> Complete(json.string(payload))
       Ok(Suspended) -> Suspend
       Error(e) -> Fail(json.string("event error"))
@@ -384,6 +396,12 @@ let generate_report = Handler(
   },
   on_error: option.None,
 )
+
+// Decoder for the job_id stored in the checkpoint:
+fn job_id_decoder() -> decode.Decoder(String) {
+  use job_id <- decode.field("job_id", decode.string)
+  decode.success(job_id)
+}
 ```
 
 Then in your webhook HTTP handler (separate process):
@@ -448,7 +466,7 @@ let handler = Handler(
     list.each(records, fn(batch) {
       process_batch(batch)
       // Keep the lease alive after each batch
-      let _ = ctx.heartbeat(ctx)
+      let _ = context.heartbeat(ctx)
     })
     Complete(json.object([#("imported", json.int(list.length(records)))]))
   },

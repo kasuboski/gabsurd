@@ -50,3 +50,26 @@ depends = ["check", "test"]
 [tasks.clean]
 description = "Clean build artifacts"
 run = "gleam clean"
+
+# --- Example tasks ---
+
+[tasks.example-build]
+description = "Build the order_workflow example"
+run = "cd examples/order_workflow && gleam build"
+
+[tasks.example-format]
+description = "Format the order_workflow example"
+run = "cd examples/order_workflow && gleam format src"
+
+[tasks.example-check]
+description = "Check formatting and build for the example"
+depends = ["example-check-format", "example-build"]
+
+[tasks.example-check-format]
+description = "Check that example files are formatted"
+run = "cd examples/order_workflow && gleam format --check src"
+
+[tasks.example-run]
+description = "Run the order_workflow example (requires DB)"
+depends = ["db-reset"]
+run = "cd examples/order_workflow && DATABASE_URL=\"postgresql://gabsurd:gabsurd@127.0.0.1:5432/gabsurd\" gleam run -m order_workflow"
