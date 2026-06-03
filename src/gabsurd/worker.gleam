@@ -24,7 +24,8 @@ import gabsurd/client.{
   type Db, type GabsurdError, QueryError, UnexpectedRowCount, NotFound,
   ConnectionError,
 }
-import gabsurd/task.{type Claim}
+import gabsurd/context.{type Context}
+import gabsurd/task
 import gleam/dict
 import gleam/erlang/process
 import gleam/int
@@ -64,8 +65,8 @@ pub type HandlerResult {
 /// ```gleam
 /// let email_handler = worker.Handler(
 ///   task_name: "send_email",
-///   execute: fn(claim) {
-///     // ... send email ...
+///   execute: fn(ctx) {
+///     // ... send email using ctx.params(ctx) ...
 ///     Complete(json.object([#("sent", json.bool(True))]))
 ///   },
 ///   on_error: option.None,
@@ -75,11 +76,13 @@ pub type Handler {
   Handler(
     /// The task_name this handler responds to.
     task_name: String,
-    /// Execute the task. Return `Complete`, `Fail`, or `Suspend`.
-    execute: fn(Claim) -> HandlerResult,
+    /// Execute the task. Receives a `Context` with the claim details,
+    /// database connection, and helper methods. Return `Complete`,
+    /// `Fail`, or `Suspend`.
+    execute: fn(Context) -> HandlerResult,
     /// Optional hook called when execute returns Fail.
-    /// Receives the claim and the error json. Use for logging/metrics.
-    on_error: option.Option(fn(Claim, json.Json) -> Nil),
+    /// Receives the context and the error json. Use for logging/metrics.
+    on_error: option.Option(fn(Context, json.Json) -> Nil),
   )
 }
 
@@ -287,10 +290,16 @@ fn handle_message(
 // Task Execution
 // ============================================================================
 
-fn execute_task(state: WorkerState, claim: Claim) -> Nil {
+fn execute_task(state: WorkerState, claim: task.Claim) -> Nil {
   case dict.get(state.handler_map, claim.task_name) {
     Ok(handler) -> {
-      case handler.execute(claim) {
+      let ctx = context.Context(
+        db: state.config.db,
+        queue_name: state.config.queue_name,
+        claim: claim,
+        claim_timeout: state.config.claim_timeout,
+      )
+      case handler.execute(ctx) {
         Complete(result_json) -> {
           case
             task.complete(
@@ -307,7 +316,7 @@ fn execute_task(state: WorkerState, claim: Claim) -> Nil {
         Fail(error_json) -> {
           // Call on_error hook if present
           case handler.on_error {
-            option.Some(hook) -> hook(claim, error_json)
+            option.Some(hook) -> hook(ctx, error_json)
             option.None -> Nil
           }
           case

@@ -11,9 +11,9 @@
 //// operation without checkpoints, see `gabsurd/task.extend_claim`.
 
 import gleam/json
-import gleam/result
+import gleam/option
 import gleam/time/timestamp.{type Timestamp}
-import gabsurd/client.{type Db, type GabsurdError}
+import gabsurd/client.{type Db, type GabsurdError, NotFound}
 import gabsurd/sql
 
 /// A checkpoint record.
@@ -55,14 +55,16 @@ pub fn set(
 }
 
 /// Get a checkpoint for a task step.
+/// Returns `Ok(Some(checkpoint))` if found, `Ok(None)` if not found,
+/// or `Error(GabsurdError)` on database failure.
 pub fn get(
   db: Db,
   queue_name: String,
   task_id: BitArray,
   step_name: String,
   include_pending: Bool,
-) -> Result(Checkpoint, GabsurdError) {
-  use row <- result.try(
+) -> Result(option.Option(Checkpoint), GabsurdError) {
+  case
     client.query_one(
       db,
       sql.get_task_checkpoint_state(
@@ -71,13 +73,17 @@ pub fn get(
         step_name,
         include_pending,
       ),
-    ),
-  )
-  Ok(Checkpoint(
-    checkpoint_name: row.checkpoint_name,
-    state: row.state,
-    status: row.status,
-    owner_run_id: row.owner_run_id,
-    updated_at: row.updated_at,
-  ))
+    )
+  {
+    Ok(row) ->
+      Ok(option.Some(Checkpoint(
+        checkpoint_name: row.checkpoint_name,
+        state: row.state,
+        status: row.status,
+        owner_run_id: row.owner_run_id,
+        updated_at: row.updated_at,
+      )))
+    Error(NotFound) -> Ok(option.None)
+    Error(e) -> Error(e)
+  }
 }

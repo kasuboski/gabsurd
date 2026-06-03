@@ -106,6 +106,7 @@ pub fn query_one(
 
   case result {
     Ok(pog.Returned(1, [row])) -> Ok(row)
+    Ok(pog.Returned(0, _)) -> Error(NotFound)
     // Absurd uses FOR UPDATE SKIP LOCKED so claim_task will never return
     // duplicate rows for the same run, but we handle the unexpected case.
     Ok(pog.Returned(n, _)) ->

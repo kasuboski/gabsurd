@@ -60,13 +60,14 @@ let assert Ok(info) =
 ### 5. Start a Worker
 
 ```gleam
+import gleam/dynamic/decode
 import gleam/json
 import gleam/option
-import gabsurd/worker
+import gabsurd/worker.{Complete, Handler}
 
-let email_handler = worker.Handler(
+let email_handler = Handler(
   task_name: "send_welcome",
-  execute: fn(claim) {
+  execute: fn(ctx) {
     // Process the task...
     Complete(json.object([#("sent", json.bool(True))]))
   },
@@ -161,7 +162,7 @@ Workflow checkpoint persistence.
 | Function | Description |
 |----------|-------------|
 | `set(db, queue, task_id, step, state, run_id, extend_claim_by)` | Save a checkpoint (pass `claim_timeout` to extend lease) |
-| `get(db, queue, task_id, step, include_pending)` | Retrieve a checkpoint |
+| `get(db, queue, task_id, step, include_pending)` | Retrieve a checkpoint, returns `Result(Option(Checkpoint), Error)` |
 
 ### `gabsurd/worker`
 
@@ -173,7 +174,6 @@ OTP worker actor for task processing.
 | `HandlerResult` | Return type: `Complete(json)`, `Fail(json)`, or `Suspend` |
 | `Config` | Worker configuration |
 | `Worker` | Running worker handle |
-
 | Function | Description |
 |----------|-------------|
 | `new(db, queue, handlers)` | Create config with defaults |
@@ -186,6 +186,28 @@ OTP worker actor for task processing.
 | `stop(worker)` | Stop a worker gracefully |
 | `child_spec(name, config)` | Create supervisor child spec |
 | `pool_child_specs(name, config, count)` | Create N child specs for a pool |
+
+### `gabsurd/context`
+
+Execution context passed to worker handlers.
+
+| Type | Description |
+|------|-------------|
+| `Context` | Encapsulates db, queue, claim, claim_timeout |
+| `EventResult` | `Received(String)` or `Suspended` |
+
+| Function | Description |
+|----------|-------------|
+| `task_id(ctx)` | Task's unique identifier |
+| `run_id(ctx)` | Current run's unique identifier |
+| `params(ctx)` | Task parameters as raw JSON string |
+| `task_name(ctx)` | Task name |
+| `attempt(ctx)` | Current attempt number |
+| `step(ctx, name, decoder, run)` | Idempotent step — skips if checkpoint exists |
+| `get_checkpoint(ctx, name)` | Get raw JSON state for a step |
+| `set_checkpoint(ctx, name, state)` | Persist a checkpoint and extend lease |
+| `heartbeat(ctx)` | Extend the claim lease |
+| `await_event(ctx, event_name, timeout)` | Await an event, returns `EventResult` |
 
 ### `gabsurd/utility`
 
@@ -203,8 +225,9 @@ Maintenance and introspection.
 │           Your Application          │
 ├─────────────────────────────────────┤
 │   worker.gleam   │  task.gleam      │  ← SDK Layer (hand-written)
-│   queue.gleam    │  event.gleam     │
-│   checkpoint.gleam  utility.gleam   │
+│   context.gleam  │  queue.gleam      │
+│   event.gleam    │  checkpoint.gleam │
+│   utility.gleam  │                   │
 ├─────────────────────────────────────┤
 │          sql.gleam (generated)      │  ← Parrot codegen
 ├─────────────────────────────────────┤
@@ -218,26 +241,29 @@ Maintenance and introspection.
 
 Workers use the **Handler Record** pattern — each task type gets a `Handler` with:
 - `task_name`: Which tasks this handler processes
-- `execute`: The business logic — `fn(Claim) -> HandlerResult`
+- `execute`: The business logic — `fn(Context) -> HandlerResult`
 - `on_error`: Optional hook for logging/metrics when execute returns `Fail`
+
+The handler receives a `Context` that encapsulates the database connection, queue,
+claim details, and claim timeout. It provides `ctx.step()` for idempotent steps
+and `ctx.await_event()` for event-driven workflows.
 
 The `HandlerResult` type has three variants:
 - `Complete(json)` — mark the task as successfully done
 - `Fail(json)` — mark the task as failed (triggers retry if attempts remain)
 - `Suspend` — the task is waiting for an event; skip complete/fail
 
-The worker polls the queue using `process.send_after`, claims tasks, dispatches to matching handlers by `task_name`, and handles the result accordingly.
+The worker polls the queue using `process.send_after`, claims tasks, constructs
+a `Context`, dispatches to matching handlers by `task_name`, and handles the result.
 
-### Claim Extension via Checkpoints
+### Idempotent Steps
 
-The primary lease extension mechanism is `checkpoint.set`, which passes `claim_timeout`
-as `extend_claim_by` to `set_task_checkpoint_state` — every checkpoint write extends
-the lease. For handlers that don't use checkpoints, the claim timeout acts as a safety
-net: if the handler takes longer than `claim_timeout` seconds, the claim expires and
-another worker picks up the task.
-
-A manual heartbeat function `task.extend_claim` is also available for long-running
-work between checkpoints.
+`ctx.step(name, decoder, run)` is the primary building block for durable workflows:
+- On first execution: calls `run()`, persists the result as a checkpoint, extends the lease
+- On retry: finds the checkpoint, decodes the stored value, skips execution
+- `decoder` is a `gleam/dynamic/decode.Decoder(a)` — Gleam's `json.Json` is write-only,
+  so a decoder is required to recover typed values from the database
+- For steps that don't need a return value, use `decode.success(Nil)`
 
 ### Unknown Task Deferral
 
@@ -257,106 +283,103 @@ inside a `static_supervisor`.
 
 ### Multi-Step Workflow with Checkpoints
 
-Durable workflows survive crashes. Each step writes a checkpoint — on retry,
-completed steps are skipped. Checkpoints also extend the worker's claim lease
+Durable workflows survive crashes. Each step uses `ctx.step` — on retry,
+completed steps are skipped. Steps also extend the worker's claim lease
 so the task never times out mid-workflow.
 
 ```gleam
+import gleam/dynamic/decode
 import gleam/json
 import gleam/option
-import gabsurd/checkpoint
+import gleam/result
+import gabsurd/context
 import gabsurd/worker.{Complete, Fail, Handler}
 
 let process_order = Handler(
   task_name: "process_order",
-  execute: fn(claim) {
-    let claim_timeout = 30
-
-    // Step 1: Charge credit card (skip if already done)
-    case checkpoint.get(db, "orders", claim.task_id, "charge", False) {
-      Error(_) -> {
-        let assert Ok(_) = charge_card(params.card_token, params.amount)
-        let assert Ok(Nil) = checkpoint.set(
-          db, "orders", claim.task_id, "charge",
-          json.object([#("amount", json.int(params.amount))]),
-          claim.run_id, claim_timeout,
-        )
-      }
-      Ok(_) -> Nil
+  execute: fn(ctx) {
+    case order_workflow(ctx) {
+      Ok(Nil) -> Complete(json.object([#("status", json.string("completed"))]))
+      Error(e) -> Fail(json.string(context_error(e)))
     }
-
-    // Step 2: Reserve inventory (skip if already done)
-    case checkpoint.get(db, "orders", claim.task_id, "reserve", False) {
-      Error(_) -> {
-        let assert Ok(_) = reserve_items(params.items)
-        let assert Ok(Nil) = checkpoint.set(
-          db, "orders", claim.task_id, "reserve",
-          json.object([#("reserved", json.bool(True))]),
-          claim.run_id, claim_timeout,
-        )
-      }
-      Ok(_) -> Nil
-    }
-
-    // Step 3: Send confirmation
-    send_email(params.email, "Order confirmed!")
-    Complete(json.object([#("status", json.string("completed"))]))
   },
-  on_error: option.Some(fn(claim, err) {
-    io.println_error("Order failed: " <> json.to_string(err))
-  }),
+  on_error: option.None,
 )
+
+fn order_workflow(ctx) -> Result(Nil, context.GabsurdError) {
+  // Step 1: Charge credit card (skip if checkpoint exists)
+  use _ <- result.try(ctx.step("charge", decode.success(Nil), fn() {
+    charge_card(decode_params(ctx.params(ctx)))
+    json.null()
+  }))
+
+  // Step 2: Reserve inventory (skip if done)
+  use _ <- result.try(ctx.step("reserve", decode.success(Nil), fn() {
+    reserve_inventory(decode_params(ctx.params(ctx)))
+    json.null()
+  }))
+
+  // Step 3: Send confirmation
+  use _ <- result.try(ctx.step("notify", decode.success(Nil), fn() {
+    send_confirmation(decode_params(ctx.params(ctx)))
+    json.null()
+  }))
+
+  Ok(Nil)
+}
+```
+
+### Steps That Pass Data Forward
+
+```gleam
+fn order_workflow(ctx) -> Result(Nil, context.GabsurdError) {
+  // Charge and get back the charge_id
+  use charge_id <- result.try(
+    ctx.step("charge", decode.field("charge_id", decode.string), fn() {
+      let result = charge_card(decode_params(ctx.params(ctx)))
+      json.object([#("charge_id", json.string(result.id))])
+    },
+  )
+
+  // Use charge_id in the next step
+  use _ <- result.try(ctx.step("capture", decode.success(Nil), fn() {
+    capture_charge(charge_id)
+    json.null()
+  }))
+
+  Ok(Nil)
+}
 ```
 
 ### Event-Driven Workflow
 
 Tasks can suspend waiting for an external event (e.g., a webhook callback).
-Call `event.await` inside the handler and return `Suspend` when the task
-needs to sleep. When `emit_event` fires, the task wakes up and the handler
-runs again.
+Call `ctx.await_event` and return `Suspend` when the task needs to sleep.
+When `emit_event` fires, the task wakes up and the handler runs again.
 
 ```gleam
+import gleam/dynamic/decode
 import gleam/json
 import gleam/option
-import gabsurd/checkpoint
-import gabsurd/event
+import gabsurd/context.{Received, Suspended}
 import gabsurd/worker.{Complete, Fail, Handler, Suspend}
 
 let generate_report = Handler(
   task_name: "generate_report",
-  execute: fn(claim) {
-    let claim_timeout = 30
+  execute: fn(ctx) {
+    // Start the remote job (idempotent — skips if already done)
+    use job_id <- result.try(
+      ctx.step("start", decode.field("job_id", decode.string), fn() {
+        let id = start_remote_job(ctx.params(ctx))
+        json.object([#("job_id", json.string(id))])
+      }),
+    )
 
-    // Check if we already started the remote job
-    case checkpoint.get(db, "reports", claim.task_id, "job_started", False) {
-      Error(_) -> {
-        // First attempt — kick off the remote job
-        let job_id = start_remote_report(claim.params)
-        let assert Ok(Nil) = checkpoint.set(
-          db, "reports", claim.task_id, "job_started",
-          json.object([#("job_id", json.string(job_id))]),
-          claim.run_id, claim_timeout,
-        )
-
-        // Wait for the remote service to POST back
-        let assert Ok(a) = event.await(
-          db, "reports", claim.task_id, claim.run_id,
-          "wait_for_callback",
-          "report_complete_" <> job_id,
-          3600,  // 1 hour timeout
-        )
-        case a.should_suspend {
-          True -> Suspend  // task sleeps until emit_event fires
-          False -> Complete(json.string(a.payload))
-        }
-      }
-      Ok(_) -> {
-        // Resumed — the event arrived
-        case claim.event_payload {
-          "" -> Fail(json.string("report timed out"))
-          payload -> Complete(json.string(payload))
-        }
-      }
+    // Wait for the remote service to POST back
+    case ctx.await_event("report_complete_" <> job_id, 3600) {
+      Ok(Received(payload)) -> Complete(json.string(payload))
+      Ok(Suspended) -> Suspend
+      Error(e) -> Fail(json.string("event error"))
     }
   },
   on_error: option.None,
@@ -415,16 +438,17 @@ let assert Ok(_) =
 For tasks that do a single long operation without checkpoints:
 
 ```gleam
-import gabsurd/task
+import gleam/list
+import gleam/json
 import gabsurd/worker.{Complete, Handler}
 
 let handler = Handler(
   task_name: "batch_import",
-  execute: fn(claim) {
+  execute: fn(ctx) {
     list.each(records, fn(batch) {
       process_batch(batch)
       // Keep the lease alive after each batch
-      task.extend_claim(db, "imports", claim.run_id, 30)
+      let _ = ctx.heartbeat(ctx)
     })
     Complete(json.object([#("imported", json.int(list.length(records)))]))
   },

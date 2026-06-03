@@ -2,6 +2,7 @@
 
 import gabsurd/checkpoint
 import gabsurd/client
+import gleam/option
 import gabsurd/queue
 import gabsurd/task
 import gleam/erlang/process
@@ -67,7 +68,7 @@ pub fn get_checkpoint_test() {
     )
 
   // Get it back
-  let assert Ok(cp) = checkpoint.get(db, q, spawned.task_id, "step1", False)
+  let assert Ok(option.Some(cp)) = checkpoint.get(db, q, spawned.task_id, "step1", False)
   cp.checkpoint_name |> should.equal("step1")
   cp.state |> should.equal("{\"progress\": 75}")
   cp.status |> should.equal("committed")

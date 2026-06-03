@@ -3,7 +3,7 @@
 import gabsurd/client
 import gabsurd/queue
 import gabsurd/task
-import gabsurd/worker.{Complete, Fail}
+import gabsurd/worker.{type Handler, Complete, Fail, Handler}
 import gleam/erlang/process
 import gleam/json
 import gleam/list
@@ -21,10 +21,10 @@ const db_url = "postgresql://gabsurd:gabsurd@127.0.0.1:5432/gabsurd"
 fn tracking_handler(
   task_name: String,
   tracker: process.Subject(Nil),
-) -> worker.Handler {
-  worker.Handler(
+) -> Handler {
+  Handler(
     task_name: task_name,
-    execute: fn(_claim) {
+    execute: fn(_ctx) {
       process.send(tracker, Nil)
       Complete(json.object([#("tracked", json.bool(True))]))
     },
@@ -95,9 +95,9 @@ pub fn worker_fails_task_on_handler_error_test() {
   let tracker = process.new_subject()
   // A handler for fail_task that tracks when called, then returns error
   let handler =
-    worker.Handler(
+    Handler(
       task_name: "fail_task",
-      execute: fn(_claim) {
+      execute: fn(_ctx) {
         process.send(tracker, Nil)
         Fail(json.object([#("deliberate", json.bool(True))]))
       },
@@ -262,9 +262,9 @@ pub fn worker_suspends_task_test() {
 
   // Handler returns Suspend — simulating an event.await call
   let handler =
-    worker.Handler(
+    Handler(
       task_name: "suspend_task",
-      execute: fn(_claim) { worker.Suspend },
+      execute: fn(_ctx) { worker.Suspend },
       on_error: option.None,
     )
 
