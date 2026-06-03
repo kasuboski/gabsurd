@@ -85,18 +85,19 @@ let assert Ok(started) = worker.start(config)
 ### 6. Worker Pool with Supervisor
 
 ```gleam
-import gleam/list
 import gleam/otp/static_supervisor
 
 let pool = worker.pool_child_specs("email_workers", config, 4)
 
-// pool is a List(ChildSpecification) — add each one to the supervisor
+// pool is a List(ChildSpecification) with exactly 4 elements
+let [first, second, third, fourth] = pool
+
 let assert Ok(sup) =
   static_supervisor.new(static_supervisor.OneForOne)
-  |> static_supervisor.add(list.first(pool) |> result.unwrap(assert_true))
-  |> static_supervisor.add(list.at(pool, 1) |> result.unwrap(assert_true))
-  |> static_supervisor.add(list.at(pool, 2) |> result.unwrap(assert_true))
-  |> static_supervisor.add(list.at(pool, 3) |> result.unwrap(assert_true))
+  |> static_supervisor.add(first)
+  |> static_supervisor.add(second)
+  |> static_supervisor.add(third)
+  |> static_supervisor.add(fourth)
   |> static_supervisor.start()
 ```
 
@@ -135,6 +136,8 @@ Task lifecycle operations.
 | `cancel(db, queue, task_id)` | Cancel a task |
 | `get_result(db, queue, task_id)` | Get task result as `TaskResult` record |
 | `retry(db, queue, task_id, options)` | Retry a failed task |
+| `extend_claim(db, queue, run_id, extend_by)` | Manually extend a claim lease (heartbeat) |
+| `schedule_run(db, queue, run_id, defer_seconds)` | Reschedule a run for future execution |
 | `new_options()` | Create empty spawn options |
 | `with_max_attempts(options, n)` | Set max attempts |
 | `with_retry_strategy(options, strategy)` | Set retry strategy |
@@ -157,7 +160,7 @@ Workflow checkpoint persistence.
 
 | Function | Description |
 |----------|-------------|
-| `set(db, queue, task_id, step, state, run_id)` | Save a checkpoint |
+| `set(db, queue, task_id, step, state, run_id, extend_claim_by)` | Save a checkpoint (pass `claim_timeout` to extend lease) |
 | `get(db, queue, task_id, step, include_pending)` | Retrieve a checkpoint |
 
 ### `gabsurd/worker`
@@ -219,16 +222,30 @@ Workers use the **Handler Record** pattern — each task type gets a `Handler` w
 
 The worker polls the queue using `process.send_after`, claims tasks, dispatches to matching handlers by `task_name`, and calls `complete` or `fail` based on the handler result.
 
-### Adaptive Polling
-When tasks are available, the worker re-polls immediately (zero delay). When the queue is empty, it waits `poll_interval` ms. This minimizes latency under load without wasting cycles when idle.
+### Claim Extension via Checkpoints
 
-### Claim Extension
-For long-running handlers, the worker automatically schedules claim lease extensions at `claim_timeout / 2` intervals. If the task completes before the extension fires, the extension fails harmlessly.
+The primary lease extension mechanism is `checkpoint.set`, which passes `claim_timeout`
+as `extend_claim_by` to `set_task_checkpoint_state` — every checkpoint write extends
+the lease. For handlers that don't use checkpoints, the claim timeout acts as a safety
+net: if the handler takes longer than `claim_timeout` seconds, the claim expires and
+another worker picks up the task.
+
+A manual heartbeat function `task.extend_claim` is also available for long-running
+work between checkpoints.
+
+### Unknown Task Deferral
+
+Tasks with no registered handler are deferred (rescheduled with a delay) rather than
+failed. This supports rolling deployments where a new task type may arrive before
+its handler code is deployed.
 
 ### Error Backoff
-On transient claim errors, the worker backs off exponentially up to `max_backoff` (default 60s), resetting on success.
 
-For pools, use `pool_child_specs` to generate N workers with globally unique IDs inside a `static_supervisor`.
+On transient claim errors, the worker backs off exponentially up to `max_backoff`
+(default 60s), resetting on success.
+
+For pools, use `pool_child_specs` to generate N workers with globally unique IDs
+inside a `static_supervisor`.
 
 ## Development
 
