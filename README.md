@@ -17,9 +17,9 @@ A Gleam SDK for the [Absurd](https://github.com/absurd-sql/absurd) durable workf
 # gleam.toml
 [dependencies]
 gabsurd = { path = "..." }
-gleam_erlang = ">= 0.25.0"
-gleam_otp = ">= 0.10.0"
-gleam_time = ">= 0.1.0"
+gleam_erlang = ">= 1.3.0 and < 2.0.0"
+gleam_otp = ">= 1.2.0 and < 2.0.0"
+gleam_time = ">= 1.8.0 and < 2.0.0"
 ```
 
 Ensure the Absurd schema is loaded into your PostgreSQL database.
@@ -492,4 +492,4 @@ DATABASE_URL="..." PATH="$(nix eval --raw 'nixpkgs#postgresql_17.out')/bin:$PATH
 
 ## License
 
-MIT
+Apache-2.0
