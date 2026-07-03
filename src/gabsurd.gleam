@@ -1,5 +1,3 @@
-import gleam/io
-
-pub fn main() -> Nil {
-  io.println("Hello from gabsurd!")
-}
+// gabsurd — a Gleam SDK for the Absurd durable workflow system.
+//
+// Public modules: client, queue, task, event, checkpoint, worker, context.
