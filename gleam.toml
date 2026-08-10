@@ -1,5 +1,5 @@
 name = "gabsurd"
-version = "0.1.0"
+version = "0.2.0"
 
 description = "A Gleam SDK for the Absurd durable workflow system, with type-safe database access via Parrot and OTP worker actors"
 licences = ["Apache-2.0"]
