@@ -350,7 +350,13 @@ pub fn cancel(
   client.exec(db, sql.cancel_task(queue_name, task_id))
 }
 
-/// Get the result of a completed task.
+/// Get the current state and terminal payload of a task in any lifecycle state.
+///
+/// Works for tasks in any state: `pending`, `running`, `sleeping`, `completed`,
+/// `failed`, and `cancelled`. The `state` field always reflects the current
+/// lifecycle state. The `result` payload is populated only for completed tasks
+/// and `failure_reason` only for failed tasks; both are empty (`"{}"`) for
+/// non-terminal and cancelled states.
 pub fn get_result(
   db: Db,
   queue_name: String,

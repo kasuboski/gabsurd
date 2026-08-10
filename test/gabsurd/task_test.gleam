@@ -200,6 +200,7 @@ pub fn task_result_states_test() {
   failed_result.task_name |> should.equal("failed_task")
   failed_result.headers |> should.equal("{}")
   failed_result.state |> should.equal("failed")
+  failed_result.failure_reason |> should.equal("\"boom\"")
 
   // cancelled
   let assert Ok(cancelled) =
