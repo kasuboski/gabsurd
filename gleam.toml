@@ -21,3 +21,17 @@ gleam_json = ">= 3.1.0 and < 4.0.0"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
+glinter = ">= 2.19.2 and < 3.0.0"
+
+[tools.glinter]
+# Parrot owns this generated module; lint the handwritten API around it.
+exclude = ["src/gabsurd/sql.gleam"]
+
+[tools.glinter.ignore]
+# Gleeunit discovers exported test functions, and assertions are the test
+# failure mechanism rather than library error handling.
+"test/**/*.gleam" = [
+  "assert_ok_pattern",
+  "discarded_result",
+  "unused_exports",
+]

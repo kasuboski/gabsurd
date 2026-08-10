@@ -393,6 +393,8 @@ pub fn cancel_task_decoder() -> decode.Decoder(CancelTask) {
 pub type GetTaskResult {
   GetTaskResult(
     task_id: BitArray,
+    task_name: String,
+    headers: String,
     state: String,
     result: String,
     failure_reason: String,
@@ -406,10 +408,12 @@ pub fn get_task_result(
   let sql =
     "SELECT
   task_id::uuid,
+  task_name::text,
+  COALESCE(headers, '{}')::text AS headers,
   state::text,
   COALESCE(result, '{}')::text AS result,
   COALESCE(failure_reason, '{}')::text AS failure_reason
-FROM absurd.get_task_result($1, $2)"
+FROM gabsurd.get_task_result($1, $2)"
   #(
     sql,
     [dev.ParamString(p_queue_name), dev.ParamBitArray(p_task_id)],
@@ -419,10 +423,19 @@ FROM absurd.get_task_result($1, $2)"
 
 pub fn get_task_result_decoder() -> decode.Decoder(GetTaskResult) {
   use task_id <- decode.field(0, decode.bit_array)
-  use state <- decode.field(1, decode.string)
-  use result <- decode.field(2, decode.string)
-  use failure_reason <- decode.field(3, decode.string)
-  decode.success(GetTaskResult(task_id:, state:, result:, failure_reason:))
+  use task_name <- decode.field(1, decode.string)
+  use headers <- decode.field(2, decode.string)
+  use state <- decode.field(3, decode.string)
+  use result <- decode.field(4, decode.string)
+  use failure_reason <- decode.field(5, decode.string)
+  decode.success(GetTaskResult(
+    task_id:,
+    task_name:,
+    headers:,
+    state:,
+    result:,
+    failure_reason:,
+  ))
 }
 
 pub type SetTaskCheckpointState {

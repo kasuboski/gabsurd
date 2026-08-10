@@ -1,6 +1,7 @@
 //// Tests for task lifecycle operations (spawn, claim, complete, fail, cancel).
 
 import gabsurd/client
+import gabsurd/event
 import gabsurd/queue
 import gabsurd/task
 import gleam/bit_array
@@ -48,7 +49,7 @@ pub fn spawn_with_options_test() {
       "retry_task",
       json.object([#("url", json.string("http://example.com"))]),
       task.new_options()
-      |> task.with_max_attempts(3),
+        |> task.with_max_attempts(3),
     )
   task_info.attempt |> should.equal(1)
   task_info.created |> should.be_true
@@ -99,12 +100,7 @@ pub fn fail_run_test() {
   let assert Ok(claims) = task.claim(db, q, "worker-3", 30, 1)
   let assert Ok(claim) = list.first(claims)
 
-  task.fail(
-    db,
-    q,
-    claim.run_id,
-    json.object([#("error", json.string("boom"))]),
-  )
+  task.fail(db, q, claim.run_id, json.object([#("error", json.string("boom"))]))
   |> should.be_ok
 
   teardown(db, q)
@@ -120,7 +116,110 @@ pub fn cancel_task_test() {
   teardown(db, q)
 }
 
-/// Test the full lifecycle: spawn → claim → complete
+/// Task reads expose routing metadata and every practical task state.
+pub fn task_result_states_test() {
+  let #(db, q) = setup("test_result_states")
+  let headers = json.object([#("source", json.string("test"))])
+
+  // pending
+  let assert Ok(pending) =
+    task.spawn(
+      db,
+      q,
+      "pending_task",
+      json.object([]),
+      task.new_options() |> task.with_headers(headers),
+    )
+  let assert Ok(pending_result) = task.get_result(db, q, pending.task_id)
+  pending_result.task_name |> should.equal("pending_task")
+  pending_result.headers |> should.equal("{\"source\": \"test\"}")
+  pending_result.state |> should.equal("pending")
+  let assert Ok(Nil) = task.cancel(db, q, pending.task_id)
+
+  // running
+  let assert Ok(running) =
+    task.spawn(db, q, "running_task", json.object([]), task.new_options())
+  let assert Ok(running_claims) = task.claim(db, q, "state-worker", 30, 1)
+  let assert Ok(running_claim) = list.first(running_claims)
+  running_claim.task_id |> should.equal(running.task_id)
+  let assert Ok(running_result) = task.get_result(db, q, running.task_id)
+  running_result.task_name |> should.equal("running_task")
+  running_result.headers |> should.equal("{}")
+  running_result.state |> should.equal("running")
+  let assert Ok(Nil) =
+    task.complete(db, q, running_claim.run_id, json.string("running-done"))
+
+  // sleeping
+  let assert Ok(sleeping) =
+    task.spawn(db, q, "sleeping_task", json.object([]), task.new_options())
+  let assert Ok(sleeping_claims) = task.claim(db, q, "state-worker", 30, 1)
+  let assert Ok(sleeping_claim) = list.first(sleeping_claims)
+  let assert Ok(awaited) =
+    event.await(
+      db,
+      q,
+      sleeping.task_id,
+      sleeping_claim.run_id,
+      "state-step",
+      "state-event",
+      1,
+    )
+  awaited.should_suspend |> should.be_true
+  let assert Ok(sleeping_result) = task.get_result(db, q, sleeping.task_id)
+  sleeping_result.task_name |> should.equal("sleeping_task")
+  sleeping_result.headers |> should.equal("{}")
+  sleeping_result.state |> should.equal("sleeping")
+
+  // completed
+  let assert Ok(completed) =
+    task.spawn(db, q, "completed_task", json.object([]), task.new_options())
+  let assert Ok(completed_claims) = task.claim(db, q, "state-worker", 30, 1)
+  let assert Ok(completed_claim) = list.first(completed_claims)
+  let assert Ok(Nil) =
+    task.complete(db, q, completed_claim.run_id, json.string("done"))
+  let assert Ok(completed_result) = task.get_result(db, q, completed.task_id)
+  completed_result.task_name |> should.equal("completed_task")
+  completed_result.headers |> should.equal("{}")
+  completed_result.state |> should.equal("completed")
+  completed_result.result |> should.equal("\"done\"")
+
+  // failed
+  let assert Ok(failed) =
+    task.spawn(
+      db,
+      q,
+      "failed_task",
+      json.object([]),
+      task.new_options() |> task.with_max_attempts(1),
+    )
+  let assert Ok(failed_claims) = task.claim(db, q, "state-worker", 30, 1)
+  let assert Ok(failed_claim) = list.first(failed_claims)
+  let assert Ok(Nil) =
+    task.fail(db, q, failed_claim.run_id, json.string("boom"))
+  let assert Ok(failed_result) = task.get_result(db, q, failed.task_id)
+  failed_result.task_name |> should.equal("failed_task")
+  failed_result.headers |> should.equal("{}")
+  failed_result.state |> should.equal("failed")
+  failed_result.failure_reason |> should.equal("\"boom\"")
+
+  // cancelled
+  let assert Ok(cancelled) =
+    task.spawn(db, q, "cancelled_task", json.object([]), task.new_options())
+  let assert Ok(Nil) = task.cancel(db, q, cancelled.task_id)
+  let assert Ok(cancelled_result) = task.get_result(db, q, cancelled.task_id)
+  cancelled_result.task_name |> should.equal("cancelled_task")
+  cancelled_result.headers |> should.equal("{}")
+  cancelled_result.state |> should.equal("cancelled")
+
+  // A task ID from another queue is not found.
+  let missing_queue = "test_result_missing"
+  let assert Ok(Nil) = queue.create(db, missing_queue)
+  task.get_result(db, missing_queue, pending.task_id)
+  |> should.equal(Error(client.NotFound))
+  let _ = queue.drop(db, missing_queue)
+  teardown(db, q)
+}
+
 pub fn full_lifecycle_test() {
   let #(db, q) = setup("test_lifecycle")
 
@@ -143,12 +242,7 @@ pub fn full_lifecycle_test() {
 
   // 3. Complete
   let assert Ok(Nil) =
-    task.complete(
-      db,
-      q,
-      claim.run_id,
-      json.object([#("output", json.int(99))]),
-    )
+    task.complete(db, q, claim.run_id, json.object([#("output", json.int(99))]))
 
   // 4. Verify no more tasks to claim
   let assert Ok(claims2) = task.claim(db, q, "lifecycle-worker", 30, 1)

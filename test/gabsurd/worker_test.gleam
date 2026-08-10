@@ -159,12 +159,12 @@ pub fn worker_processes_multiple_tasks_test() {
   teardown(db, q)
 }
 
-/// Worker should fail tasks with no matching handler.
-pub fn worker_fails_unknown_task_test() {
+/// Worker should defer tasks with no matching handler.
+pub fn worker_defers_unknown_task_test() {
   let #(db, q) = setup("test_worker_unknown")
 
-  // Spawn with max_attempts=1 so fail_run doesn't create a retry
-  let assert Ok(_) =
+  // Unknown tasks are deferred rather than failed, regardless of retries.
+  let assert Ok(task_info) =
     task.spawn(
       db,
       q,
@@ -186,9 +186,9 @@ pub fn worker_fails_unknown_task_test() {
   // Wait a bit for the poll cycle to run
   process.sleep(1000)
 
-  // The unknown task should have been permanently failed by the worker
-  let assert Ok(claims) = task.claim(db, q, "verify_worker", 1, 10)
-  claims |> list.length |> should.equal(0)
+  // The unknown task should be sleeping until its deferred retry.
+  let assert Ok(result) = task.get_result(db, q, task_info.task_id)
+  result.state |> should.equal("sleeping")
 
   worker.stop(w)
   teardown(db, q)
