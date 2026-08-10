@@ -1,10 +1,10 @@
 //// Queue management for the Absurd durable workflow system.
 //// Provides high-level functions for creating, dropping, and listing queues.
 
-import gleam/list
-import gleam/result
 import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/sql
+import gleam/list
+import gleam/result
 
 /// Create a new queue with default (unpartitioned) storage mode.
 pub fn create(db: Db, queue_name: String) -> Result(Nil, GabsurdError) {

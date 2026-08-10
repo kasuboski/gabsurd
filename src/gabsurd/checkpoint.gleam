@@ -10,11 +10,11 @@
 //// short steps never time out.  For handlers that do a single long-running
 //// operation without checkpoints, see `gabsurd/task.extend_claim`.
 
+import gabsurd/client.{type Db, type GabsurdError, NotFound}
+import gabsurd/sql
 import gleam/json
 import gleam/option
 import gleam/time/timestamp.{type Timestamp}
-import gabsurd/client.{type Db, type GabsurdError, NotFound}
-import gabsurd/sql
 
 /// A checkpoint record.
 pub type Checkpoint {
@@ -76,13 +76,15 @@ pub fn get(
     )
   {
     Ok(row) ->
-      Ok(option.Some(Checkpoint(
-        checkpoint_name: row.checkpoint_name,
-        state: row.state,
-        status: row.status,
-        owner_run_id: row.owner_run_id,
-        updated_at: row.updated_at,
-      )))
+      Ok(
+        option.Some(Checkpoint(
+          checkpoint_name: row.checkpoint_name,
+          state: row.state,
+          status: row.status,
+          owner_run_id: row.owner_run_id,
+          updated_at: row.updated_at,
+        )),
+      )
     Error(NotFound) -> Ok(option.None)
     Error(e) -> Error(e)
   }

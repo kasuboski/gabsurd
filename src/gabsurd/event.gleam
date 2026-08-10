@@ -1,10 +1,10 @@
 //// Event operations for the Absurd durable workflow system.
 //// Provides functions for emitting and awaiting events.
 
-import gleam/json
-import gleam/result
 import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/sql
+import gleam/json
+import gleam/result
 
 /// Result of an await_event call.
 pub type AwaitResult {
@@ -36,18 +36,9 @@ pub fn await(
   event_name: String,
   timeout: Int,
 ) -> Result(AwaitResult, GabsurdError) {
-  use row <- result.try(
-    client.query_one(
-      db,
-      sql.await_event(
-        queue_name,
-        task_id,
-        run_id,
-        step_name,
-        event_name,
-        timeout,
-      ),
-    ),
-  )
+  use row <- result.try(client.query_one(
+    db,
+    sql.await_event(queue_name, task_id, run_id, step_name, event_name, timeout),
+  ))
   Ok(AwaitResult(should_suspend: row.should_suspend, payload: row.payload))
 }

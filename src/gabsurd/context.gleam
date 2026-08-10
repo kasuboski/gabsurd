@@ -32,13 +32,13 @@
 //// }
 //// ```
 
-import gleam/dynamic/decode
-import gleam/json
-import gleam/option
 import gabsurd/checkpoint
 import gabsurd/client.{type Db, type GabsurdError}
 import gabsurd/event
 import gabsurd/task.{type Claim}
+import gleam/dynamic/decode
+import gleam/json
+import gleam/option
 
 // ============================================================================
 // Public Types
@@ -47,12 +47,7 @@ import gabsurd/task.{type Claim}
 /// Execution context for a running task. Constructed by the worker,
 /// passed to your handler.
 pub type Context {
-  Context(
-    db: Db,
-    queue_name: String,
-    claim: Claim,
-    claim_timeout: Int,
-  )
+  Context(db: Db, queue_name: String, claim: Claim, claim_timeout: Int)
 }
 
 /// Result of `await_event`. The event was either received (task continues)
@@ -208,12 +203,7 @@ pub fn set_checkpoint(
 
 /// Extend the claim lease by `claim_timeout` seconds.
 pub fn heartbeat(ctx: Context) -> Result(Nil, GabsurdError) {
-  task.extend_claim(
-    ctx.db,
-    ctx.queue_name,
-    ctx.claim.run_id,
-    ctx.claim_timeout,
-  )
+  task.extend_claim(ctx.db, ctx.queue_name, ctx.claim.run_id, ctx.claim_timeout)
 }
 
 // ============================================================================

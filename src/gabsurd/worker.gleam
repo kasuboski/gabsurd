@@ -21,8 +21,8 @@
 ////   official Absurd SDK behaviour).
 
 import gabsurd/client.{
-  type Db, type GabsurdError, QueryError, UnexpectedRowCount, NotFound,
-  ConnectionError,
+  type Db, type GabsurdError, ConnectionError, NotFound, QueryError,
+  UnexpectedRowCount,
 }
 import gabsurd/context.{type Context}
 import gabsurd/task
@@ -137,7 +137,7 @@ pub fn new(db: Db, queue_name: String, handlers: List(Handler)) -> Config {
     poll_interval: 5000,
     claim_timeout: 30,
     batch_size: 1,
-    max_backoff: 60000,
+    max_backoff: 60_000,
     handlers: handlers,
   )
 }
@@ -223,10 +223,7 @@ pub fn pool_child_specs(
   let unique = client.unique_integer()
   list.index_fold(list.repeat(Nil, count), [], fn(acc, _, i) {
     let i = i + 1
-    let wid =
-      name
-      <> "_" <> int.to_string(unique)
-      <> "_" <> int.to_string(i)
+    let wid = name <> "_" <> int.to_string(unique) <> "_" <> int.to_string(i)
     let config = Config(..config, worker_id: wid)
     [supervision.worker(fn() { start(config) }), ..acc]
   })
@@ -255,9 +252,7 @@ fn handle_message(
         Ok(claims) -> {
           let state = WorkerState(..state, consecutive_errors: 0)
 
-          list.each(claims, fn(claim) {
-            execute_task(state, claim)
-          })
+          list.each(claims, fn(claim) { execute_task(state, claim) })
 
           // Schedule next poll
           let _ =
@@ -275,8 +270,7 @@ fn handle_message(
               state.config.max_backoff,
             )
           log_error("claim error", error)
-          let _ =
-            process.send_after(state.subject, backoff, Poll)
+          let _ = process.send_after(state.subject, backoff, Poll)
           actor.continue(state)
         }
       }
@@ -293,12 +287,13 @@ fn handle_message(
 fn execute_task(state: WorkerState, claim: task.Claim) -> Nil {
   case dict.get(state.handler_map, claim.task_name) {
     Ok(handler) -> {
-      let ctx = context.Context(
-        db: state.config.db,
-        queue_name: state.config.queue_name,
-        claim: claim,
-        claim_timeout: state.config.claim_timeout,
-      )
+      let ctx =
+        context.Context(
+          db: state.config.db,
+          queue_name: state.config.queue_name,
+          claim: claim,
+          claim_timeout: state.config.claim_timeout,
+        )
       case handler.execute(ctx) {
         Complete(result_json) -> {
           case
@@ -353,8 +348,8 @@ fn execute_task(state: WorkerState, claim: task.Claim) -> Nil {
         )
       io.println_error(
         "gabsurd worker: deferred unknown task \""
-          <> claim.task_name
-          <> "\" (no handler registered)",
+        <> claim.task_name
+        <> "\" (no handler registered)",
       )
     }
   }

@@ -111,8 +111,7 @@ pub fn query_one(
     // duplicate rows for the same run, but we handle the unexpected case.
     Ok(pog.Returned(n, _)) ->
       Error(UnexpectedRowCount("expected 1 row, got " <> int.to_string(n)))
-    Error(error) ->
-      Error(query_error_to_gabsurd(error))
+    Error(error) -> Error(query_error_to_gabsurd(error))
   }
 }
 
@@ -131,8 +130,7 @@ pub fn query_many(
 
   case result {
     Ok(pog.Returned(_, rows)) -> Ok(rows)
-    Error(error) ->
-      Error(query_error_to_gabsurd(error))
+    Error(error) -> Error(query_error_to_gabsurd(error))
   }
 }
 
@@ -152,8 +150,7 @@ pub fn exec(
 
   case result {
     Ok(_) -> Ok(Nil)
-    Error(error) ->
-      Error(query_error_to_gabsurd(error))
+    Error(error) -> Error(query_error_to_gabsurd(error))
   }
 }
 
@@ -164,25 +161,25 @@ fn add_params(query: pog.Query(a), params: List(dev.Param)) -> pog.Query(a) {
 fn query_error_to_gabsurd(error: pog.QueryError) -> GabsurdError {
   case error {
     pog.ConstraintViolated(message, _, _) -> QueryError(message)
-    pog.PostgresqlError(code, _, message) ->
-      QueryError(code <> ": " <> message)
+    pog.PostgresqlError(code, _, message) -> QueryError(code <> ": " <> message)
     pog.UnexpectedArgumentCount(expected, got) ->
       QueryError(
         "unexpected argument count: expected "
-          <> int.to_string(expected)
-          <> " got "
-          <> int.to_string(got),
+        <> int.to_string(expected)
+        <> " got "
+        <> int.to_string(got),
       )
     pog.UnexpectedArgumentType(expected, got) ->
-      QueryError("unexpected argument type: expected " <> expected <> " got " <> got)
+      QueryError(
+        "unexpected argument type: expected " <> expected <> " got " <> got,
+      )
     pog.UnexpectedResultType(errors) ->
       QueryError(
         "decode error: "
-          <> string.join(
-            list.map(errors, fn(e) {
-              e.expected <> " got " <> e.found
-            }),
-            ", "),
+        <> string.join(
+          list.map(errors, fn(e) { e.expected <> " got " <> e.found }),
+          ", ",
+        ),
       )
     pog.QueryTimeout -> QueryError("query timeout")
     pog.ConnectionUnavailable -> ConnectionError("no connection available")
