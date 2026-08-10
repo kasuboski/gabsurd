@@ -94,10 +94,12 @@ SELECT absurd.cancel_task($1, $2)::text;
 -- name: GetTaskResult :one
 SELECT
   task_id::uuid,
+  task_name::text,
+  COALESCE(headers, '{}')::text AS headers,
   state::text,
   COALESCE(result, '{}')::text AS result,
   COALESCE(failure_reason, '{}')::text AS failure_reason
-FROM absurd.get_task_result($1, $2);
+FROM gabsurd.get_task_result($1, $2);
 
 -- ----------------------------------------------------------------------------
 -- Checkpoints

@@ -28,9 +28,12 @@ docker exec "${CONTAINER_NAME}" dropdb --if-exists -U "${DB_USER}" "${DB_NAME}"
 docker exec "${CONTAINER_NAME}" createdb -U "${DB_USER}" "${DB_NAME}"
 
 echo "📋 Applying stubs..."
-docker exec -i "${CONTAINER_NAME}" psql -U "${DB_USER}" -d "${DB_NAME}" < "${PROJECT_ROOT}/priv/stubs.sql"
+docker exec -i "${CONTAINER_NAME}" psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d "${DB_NAME}" < "${PROJECT_ROOT}/priv/stubs.sql"
 
 echo "📋 Applying absurd schema..."
-docker exec -i "${CONTAINER_NAME}" psql -U "${DB_USER}" -d "${DB_NAME}" < "${PROJECT_ROOT}/priv/absurd.sql"
+docker exec -i "${CONTAINER_NAME}" psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d "${DB_NAME}" < "${PROJECT_ROOT}/priv/absurd.sql"
+
+echo "📋 Applying gabsurd SQL extensions..."
+docker exec -i "${CONTAINER_NAME}" psql -v ON_ERROR_STOP=1 -U "${DB_USER}" -d "${DB_NAME}" < "${PROJECT_ROOT}/priv/gabsurd.sql"
 
 echo "✅ Database reset complete."

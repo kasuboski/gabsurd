@@ -26,6 +26,10 @@ run = "gleam build"
 description = "Format all Gleam source files"
 run = "gleam format"
 
+[tasks.lint]
+description = "Lint handwritten Gleam source"
+run = "gleam run -m glinter"
+
 [tasks.check]
 description = "Check formatting and build"
 depends = ["check-format", "build"]
@@ -41,7 +45,7 @@ run = "gleam test"
 
 [tasks.codegen]
 description = "Regenerate SQL module via Parrot (needs pg_dump on PATH)"
-run = "PATH=\"$(nix eval --raw 'nixpkgs#postgresql_17.out')/bin:$PATH\" gleam run -m parrot"
+run = "bash bin/codegen.sh"
 
 [tasks.pre-commit]
 description = "Run before every commit: format check, build, and tests"
